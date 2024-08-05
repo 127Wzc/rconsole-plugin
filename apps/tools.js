@@ -43,7 +43,7 @@ import {
     downloadImg,
     estimateReadingTime,
     formatBiliInfo,
-    retryAxiosReq,
+    retryAxiosReq, saveJsonToFile,
     secondsToTime,
     testProxy,
     truncateString
@@ -962,17 +962,20 @@ export class tools extends plugin {
             || /(http:|https:)\/\/www\.xiaohongshu\.com\/explore\/(\w+)/.exec(
                 e.msg,
             )?.[0]
+        // 注入ck
+        XHS_NO_WATERMARK_HEADER.cookie = this.xiaohongshuCookie;
         // 解析短号
         let id;
         if (msgUrl.includes("xhslink")) {
             await fetch(msgUrl, {
+                headers: XHS_NO_WATERMARK_HEADER,
                 redirect: "follow",
             }).then(resp => {
                 const uri = decodeURIComponent(resp.url);
                 // 如果出现了网页验证uri:https://www.xiaohongshu.com/website-login/captcha?redirectPath=https://www.xiaohongshu.com/discovery/item/63c93ac3000000002203b28a?app_platform=android&app_version=8.23.1&author_share=1&ignoreEngage=true&share_from_user_hidden=true&type=normal&xhsshare=CopyLink&appuid=62c58b90000000000303dc54&apptime=1706149572&exSource=&verifyUuid=a5f32b62-453e-426b-98fe-2cfe0c16776d&verifyType=102&verifyBiz=461
                 const verify = uri.match(/\/item\/([0-9a-fA-F]+)/);
                 // 一般情况下不会出现问题就使用这个正则
-                id = /explore\/(\w+)/.exec(uri)?.[1] ?? verify?.[1];
+                id = /noteId=(\w+)/.exec(uri)?.[1] ?? verify?.[1];
             });
         } else {
             id = /explore\/(\w+)/.exec(msgUrl)?.[1] || /discovery\/item\/(\w+)/.exec(msgUrl)?.[1];
@@ -983,8 +986,6 @@ export class tools extends plugin {
             e.reply(`2024-8-2后反馈必须使用ck，不然无法解析请填写相关ck\n文档：${HELP_DOC}`);
             return;
         }
-        // 注入ck
-        XHS_NO_WATERMARK_HEADER.cookie = this.xiaohongshuCookie;
         // 获取信息
         fetch(`${XHS_REQ_LINK}${id}`, {
             headers: XHS_NO_WATERMARK_HEADER,
@@ -1000,8 +1001,11 @@ export class tools extends plugin {
                 // 封面
                 const cover = noteData.imageList?.[0].urlDefault;
                 e.reply([segment.image(cover), `识别：小红书, ${title}\n${desc}`]);
-                // 构造xhs视频链接
-                const xhsVideoUrl = noteData.video.media.stream.h264?.[0]?.masterUrl;
+                // ⚠️ （暂时废弃）构造xhs视频链接（有水印）
+                // const xhsVideoUrl = noteData.video.media.stream.h264?.[0]?.masterUrl;
+
+                // 构造无水印
+                const xhsVideoUrl = `http://sns-video-bd.xhscdn.com/${noteData.video.consumer.originVideoKey}`
                 // 下载视频
                 this.downloadVideo(xhsVideoUrl).then(path => {
                     if (path === undefined) {
