@@ -9,7 +9,7 @@ export class OpenaiBuilder {
         this.baseURL = "https://api.moonshot.cn"; // 默认模型
         this.apiKey = ""; // 默认API密钥
         this.prompt = "描述一下这个图片"; // 默认提示
-        this.model = 'claude-3-haiku-20240307'
+        this.model = 'moonshot-v1-8k'
         this.path = ''; // 上传文件的路径
     }
 
@@ -51,7 +51,7 @@ export class OpenaiBuilder {
     async kimi(query) {
         // 请求Kimi
         const completion = await this.client.chat.completions.create({
-            model: "moonshot-v1-8k",
+            model: this.model,
             messages: [
                 {
                     "role": "system",
@@ -77,7 +77,7 @@ export class OpenaiBuilder {
         let file_content = await (await this.client.files.content(file_object.id)).text()
         // 请求Kimi
         const completion = await this.client.chat.completions.create({
-            model: "moonshot-v1-8k",
+            model: this.model,
             messages: [
                 {
                     "role": "system",
