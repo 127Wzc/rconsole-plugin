@@ -1,15 +1,27 @@
-// 主库
-import fetch from "node-fetch";
-// 爬虫库
-import puppeteer from "../../../lib/puppeteer/puppeteer.js";
-// http库
 import axios from "axios";
+import _ from "lodash";
+import fetch from "node-fetch";
 // 常量
 import { CAT_LIMIT, COMMON_USER_AGENT } from "../constants/constant.js";
+import {
+    LINUX_AI_PROMPT,
+    LINUX_QUERY,
+    RDOC_AI_PROMPT,
+    RDOC_LINK,
+    REDIS_YUNZAI_LINUX,
+    REDIS_YUNZAI_RDOC
+} from "../constants/query.js";
 // 配置文件
-import config from "../model/index.js";
-// 书库
-import { getYiBook, getZBook, getZHelper } from "../utils/books.js";
+import config from "../model/config.js";
+import { deepSeekChat, llmRead } from "../utils/llm-util.js";
+import { OpenaiBuilder } from "../utils/openai-builder.js";
+import {
+    redisExistAndGetKey,
+    redisExistAndInsertObject,
+    redisExistAndUpdateObject,
+    redisSetKey
+} from "../utils/redis-util.js";
+import { textArrayToMakeForward } from "../utils/yunzai-util.js";
 
 export class query extends plugin {
 
@@ -41,16 +53,16 @@ export class query extends plugin {
                     fnc: "cospro",
                 },
                 {
-                    reg: "^#搜书(.*)$",
-                    fnc: "searchBook",
-                },
-                {
                     reg: "^#竹白(.*)",
                     fnc: "zhubaiSearch",
                 },
                 {
-                    reg: "^#(wiki|百科)(.*)$",
-                    fnc: "wiki",
+                    reg: "^#(linux|Linux)(.*)",
+                    fnc: "linuxQuery"
+                },
+                {
+                    reg: "^#R文档(.*)",
+                    fnc: "intelligentDoc",
                 }
             ],
         });
@@ -58,6 +70,12 @@ export class query extends plugin {
         this.toolsConfig = config.getConfig("tools");
         // 视频保存路径
         this.defaultPath = this.toolsConfig.defaultPath;
+        // ai接口
+        this.aiBaseURL = this.toolsConfig.aiBaseURL;
+        // ai api key
+        this.aiApiKey = this.toolsConfig.aiApiKey;
+        // ai模型
+        this.aiModel = this.toolsConfig.aiModel;
     }
 
     async doctor(e) {
@@ -67,34 +85,29 @@ export class query extends plugin {
             const res = await fetch(url)
                 .then(resp => resp.json())
                 .then(resp => resp.list);
-            const promises = res.map(async element => {
+            let msg = [];
+            for (let element of res) {
                 const title = this.removeTag(element.title);
-                const template = `${ title }\n标签：${ element.secondTitle }\n介绍：${ element.introduction }`;
-
-                if (title === keyword) {
-                    const browser = await puppeteer.browserInit();
-                    const page = await browser.newPage();
-                    await page.goto(`https://www.dayi.org.cn/drug/${ element.id }`);
-                    const buff = await page.screenshot({
-                        fullPage: true,
-                        type: "jpeg",
-                        omitBackground: false,
-                        quality: 90,
+                const thumbnail = element?.thumbnail || element?.auditDoctor?.thumbnail;
+                const doctor = `\n\n👨‍⚕️ 医生信息：${ element?.auditDoctor?.name } - ${ element?.auditDoctor?.clinicProfessional } - ${ element?.auditDoctor?.eduProfessional } - ${ element?.auditDoctor?.institutionName } - ${ element?.auditDoctor?.institutionLevel } - ${ element?.auditDoctor?.departmentName }`
+                const template = `📌 ${ title } - ${ element.secondTitle }${ element?.auditDoctor ? doctor : '' }\n\n📝 简介：${ element.introduction }`;
+                if (thumbnail) {
+                    msg.push({
+                        message: [segment.image(thumbnail), { type: "text", text: template, }],
+                        nickname: e.sender.card || e.user_id,
+                        user_id: e.user_id,
                     });
-                    await e.reply(segment.image(buff));
-                    browser.close();
+                } else {
+                    msg.push({
+                        message: {
+                            type: "text",
+                            text: template,
+                        },
+                        nickname: e.sender.card || e.user_id,
+                        user_id: e.user_id,
+                    })
                 }
-
-                return {
-                    message: {
-                        type: "text",
-                        text: template,
-                    },
-                    nickname: Bot.nickname,
-                    user_id: Bot.user_id,
-                };
-            });
-            const msg = await Promise.all(promises);
+            }
             e.reply(await Bot.makeForwardMsg(msg));
         } catch (err) {
             logger.error(err);
@@ -195,41 +208,6 @@ export class query extends plugin {
         return true;
     }
 
-    // 搜书
-    async searchBook(e) {
-        let keyword = e.msg.replace(/#|搜书/g, "").trim();
-        if (!keyword) {
-            e.reply("请输入书名，例如：#搜书 非暴力沟通");
-            return true;
-        }
-
-        // 集成易书、zBook
-        const searchBookFunc = async () => {
-            try {
-                const bookList = await Promise.allSettled([
-                    getYiBook(e, keyword),
-                    getZBook(e, keyword),
-                ]);
-                // 压缩直链结果
-                const combineRet = bookList
-                    .filter(item => item.status === "fulfilled" && item.value && item.value.length > 0)
-                    .flatMap(item => {
-                        return item.value.flat();
-                    });
-                combineRet.length > 0 && await e.reply(await Bot.makeForwardMsg(combineRet));
-                // ZHelper 特殊处理
-                const zHelper = await getZHelper(e, keyword);
-                zHelper.length > 1 &&
-                e.reply(await Bot.makeForwardMsg(zHelper));
-            } catch (err) {
-                logger.error(err);
-                e.reply("部分搜书正在施工🚧");
-            }
-        }
-        await this.limitUserUse(e, searchBookFunc);
-        return true;
-    }
-
     // 竹白百科
     async zhubaiSearch(e) {
         const keyword = e.msg.replace("#竹白", "").trim();
@@ -270,47 +248,150 @@ export class query extends plugin {
         return true;
     }
 
-    // 百科
-    async wiki(e) {
-        const key = e.msg.replace(/#|百科|wiki/g, "").trim();
-        const url = `https://xiaoapi.cn/API/bk.php?m=json&type=sg&msg=${ encodeURI(key) }`;
-        const bdUrl = `https://xiaoapi.cn/API/bk.php?m=json&type=bd&msg=${ encodeURI(key) }`;
-        const bkRes = await Promise.all([
-            axios
-                .get(bdUrl, {
-                    headers: {
-                        "User-Agent": COMMON_USER_AGENT,
-                    },
-                    timeout: 10000,
-                })
-                .then(resp => {
-                    return resp.data;
-                }),
-            axios
-                .get(url, {
-                    headers: {
-                        "User-Agent": COMMON_USER_AGENT,
-                    },
-                    timeout: 10000,
-                })
-                .then(resp => {
-                    return resp.data;
-                }),
-        ]).then(async res => {
-            return res.map(item => {
-                return {
-                    message: `
-                      解释：${ _.get(item, "msg") }\n
-                      详情：${ _.get(item, "more") }\n
-                    `,
-                    nickname: e.sender.card || e.user_id,
-                    user_id: e.user_id,
-                };
+    async linuxQuery(e) {
+        const order = e.msg.replace(/^#([lL])inux/, "").trim();
+        // 查询 Redis 中是否存在这个命令如果存在直接返回没有的话就发起网络请求
+        const linuxInRedis = await redisExistAndGetKey(REDIS_YUNZAI_LINUX)
+        let linuxOrderData;
+        // 判断这个命令是否在缓存里
+        const isOrderInRedis = linuxInRedis && Object.keys(linuxInRedis).includes(order);
+        if (!isOrderInRedis) {
+            // 没有在缓存里，直接发起网络请求
+            const resp = await fetch(LINUX_QUERY.replace("{}", order), {
+                headers: {
+                    "User-Agent": COMMON_USER_AGENT
+                }
             });
-            // 小鸡解释：${ _.get(data2, 'content') }
-        });
-        await e.reply(await Bot.makeForwardMsg(bkRes));
+            linuxOrderData = (await resp.json()).data;
+            // 如果缓存里没有就保存一份到缓存里
+            linuxOrderData && await redisExistAndInsertObject(REDIS_YUNZAI_LINUX, { [order]: linuxOrderData });
+        } else {
+            // 在缓存里就取出
+            linuxOrderData = linuxInRedis[order];
+        }
+        try {
+            const builder = await new OpenaiBuilder()
+                .setBaseURL(this.aiBaseURL)
+                .setApiKey(this.aiApiKey)
+                .setModel(this.aiModel)
+                .setPrompt(LINUX_AI_PROMPT)
+                .build();
+            let aiBuilder;
+            if (linuxOrderData) {
+                const { linux, content, link } = linuxOrderData;
+                // 发送消息
+                e.reply(`识别：Linux命令 <${ linux }>\n\n功能：${ content }`);
+                aiBuilder = await builder.kimi(`能否帮助根据${ link }网站的Linux命令内容返回一些常见的用法，内容简洁明了即可`)
+            } else {
+                aiBuilder = await builder.kimi(`我现在需要一个Linux命令去完成：“${ order }”，你能否帮助我查询到相关的一些命令用法和示例，内容简洁明了即可`);
+            }
+            // 如果填了写 AI 才总结
+            if (this.aiApiKey && this.aiBaseURL) {
+                const { ans: kimiAns, model } = aiBuilder;
+                const Msg = await Bot.makeForwardMsg(textArrayToMakeForward(e, [`「R插件 x ${ model }」联合为您总结内容：`, kimiAns]));
+                await e.reply(Msg);
+                // 提取AI返回的内容并进行解析
+                if (_.isEmpty(linuxInRedis[order]?.content.trim())) {
+                    const parsedData = this.parseAiResponse(order, kimiAns);
+                    await redisExistAndUpdateObject(REDIS_YUNZAI_LINUX, order, parsedData);
+                    e.reply(`已重新学习命令 ${ order } 的用法，当前已经更新功能为：${ parsedData.content }`);
+                }
+            }
+        } catch (err) {
+            e.reply(`暂时无法查询到当前命令！`);
+            logger.error(logger.red(`[R插件][linux]: ${ err }`));
+        }
         return true;
+    }
+
+    /**
+     * AI响应解析函数
+     * @param order
+     * @param aiResponse
+     * @returns {{linux, link: string, content: (*|string)}}
+     */
+    parseAiResponse(order, aiResponse) {
+        // 检查 aiResponse 是否为有效字符串
+        if (!aiResponse || typeof aiResponse !== 'string') {
+            return {
+                linux: order,
+                content: '',
+                link: `https://www.linuxcool.com/${ order }` // 默认参考链接
+            };
+        }
+
+        // 初始化保存数据的对象
+        let parsedData = {
+            linux: order,
+            content: '',
+            link: `https://www.linuxcool.com/${ order }`  // 默认参考链接
+        };
+
+        // 清理多余的换行符，避免意外的分隔问题
+        const lines = aiResponse.split('\n').map(line => line.trim()).filter(line => line);
+
+        // 遍历每一行查找命令相关的描述
+        lines.forEach(line => {
+            // 允许命令带有可选的路径，修改正则表达式以适应路径变化
+            const match = line.match(/[`'“](.+?)[`'”]\s*[:：—-]?\s*(.*)/);
+
+            if (match) {
+                logger.info(match)
+                const command = match[1].trim();  // 提取命令部分
+                const description = match[2].trim();  // 提取描述部分// 同样忽略路径
+
+                // 如果命令和参数部分匹配，保存描述
+                if (command.includes(order)) {
+                    parsedData.content = description;
+                }
+            }
+        });
+
+        // 如果没有找到具体的描述内容，则给出默认提示
+        if (!parsedData.content) {
+            parsedData.content = '';
+        }
+
+        return parsedData;
+    }
+
+    async intelligentDoc(e) {
+        const question = e.msg.replace("#R文档", "").trim();
+        const rPluginDocument = await redisExistAndGetKey(REDIS_YUNZAI_RDOC);
+        if (question === "") {
+            e.reply("请输入要查询的文档内容！\n例如：#R文档 如何玩转BBDown");
+            return;
+        } else if (question === "更新" || rPluginDocument?.content === undefined) {
+            // 权限判定
+            if (!e.isMaster) {
+                e.reply("请让管理员发送以进行初始化，或者让管理员进行更新！");
+                return;
+            }
+            e.reply("更新文档中...");
+            const content = await llmRead(RDOC_LINK);
+            await redisSetKey(REDIS_YUNZAI_RDOC, {
+                content
+            })
+            e.reply("文档更新完成！");
+        }
+        let kimiAns, model = "DeepSeek";
+        if (this.aiBaseURL && this.aiApiKey) {
+            const builder = await new OpenaiBuilder()
+                .setBaseURL(this.aiBaseURL)
+                .setApiKey(this.aiApiKey)
+                .setModel(this.aiModel)
+                .setPrompt(rPluginDocument)
+                .build();
+            const kimiResp = await builder.kimi(RDOC_AI_PROMPT.replace("{}", question));
+            kimiAns = kimiResp.ans;
+            model = kimiResp.model;
+        } else {
+            logger.info(RDOC_AI_PROMPT.replace("{}", question));
+            kimiAns = await deepSeekChat(RDOC_AI_PROMPT.replace("{}", question), rPluginDocument.content);
+        }
+        const Msg = await Bot.makeForwardMsg(textArrayToMakeForward(e, [`「R插件 x ${ model }」联合为您总结内容：`, kimiAns]));
+        await e.reply(Msg);
+        return;
     }
 
     // 删除标签

@@ -1,141 +1,187 @@
-import fs from "node:fs";
+import { promises as fs } from "fs";
 import path from "path";
+
+// 常量提取
+const mimeTypes = {
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.png': 'image/png',
+    '.gif': 'image/gif',
+    '.pdf': 'application/pdf',
+    '.txt': 'text/plain',
+    // 添加其他文件类型和MIME类型的映射
+};
+
+// 通用错误处理函数
+function handleError(err) {
+    logger.error(`错误: ${ err.message }\n堆栈: ${ err.stack }`);
+    throw err;
+}
 
 /**
  * 检查文件是否存在并且删除
- * @param file
+ * @param {string} file - 文件路径
  * @returns {Promise<void>}
  */
 export async function checkAndRemoveFile(file) {
     try {
-        await fs.promises.access(file);
-        await fs.promises.unlink(file);
-        logger.mark('文件已存在');
+        await fs.access(file);
+        await fs.unlink(file);
+        logger.info(`文件 ${ file } 删除成功。`);
     } catch (err) {
         if (err.code !== 'ENOENT') {
-            throw err;
+            handleError(err);
         }
     }
 }
 
 /**
  * 创建文件夹，如果不存在
- * @param dir
+ * @param {string} dir - 文件夹路径
  * @returns {Promise<void>}
  */
 export async function mkdirIfNotExists(dir) {
     try {
-        await fs.promises.access(dir);
+        await fs.access(dir);
     } catch (err) {
         if (err.code === 'ENOENT') {
-            await fs.promises.mkdir(dir, { recursive: true });
+            await fs.mkdir(dir, { recursive: true });
+            logger.info(`目录 ${ dir } 创建成功。`);
         } else {
-            throw err;
+            handleError(err);
         }
     }
 }
 
 /**
  * 删除文件夹下所有文件
+ * @param {string} folderPath - 文件夹路径
  * @returns {Promise<number>}
- * @param folderPath
  */
 export async function deleteFolderRecursive(folderPath) {
     try {
         const files = await readCurrentDir(folderPath);
         const actions = files.map(async (file) => {
             const curPath = path.join(folderPath, file);
-
-            const stat = await fs.promises.lstat(curPath);
+            const stat = await fs.lstat(curPath);
             if (stat.isDirectory()) {
-                // recurse
                 return deleteFolderRecursive(curPath);
             } else {
-                // delete file
-                return fs.promises.unlink(curPath);
+                return fs.unlink(curPath);
             }
         });
 
         await Promise.allSettled(actions);
+        logger.info(`文件夹 ${ folderPath } 中的所有文件删除成功。`);
         return files.length;
     } catch (error) {
-        logger.error(error);
+        handleError(error);
         return 0;
     }
 }
 
 /**
  * 读取当前文件夹的所有文件和文件夹
- * @param path      路径
- * @param printTree 是否打印树状图
- * @returns {Promise<*>} 返回一个包含文件名的数组
+ * @param {string} dirPath - 路径
+ * @returns {Promise<string[]>} 返回一个包含文件名的数组
  */
-export async function readCurrentDir(path) {
+export async function readCurrentDir(dirPath) {
     try {
-        const files = await fs.promises.readdir(path);
-        return files;
+        return await fs.readdir(dirPath);
     } catch (err) {
-        logger.error(err);
+        handleError(err);
     }
 }
 
 /**
  * 拷贝文件
- * @param srcDir
- * @param destDir
- * @returns {Promise<*|null>}
+ * @param {string} srcDir - 源文件目录
+ * @param {string} destDir - 目标文件目录
+ * @param {string[]} [specificFiles=[]] - 过滤文件，不填写就拷贝全部
+ * @returns {Promise<string[]>} 拷贝的文件列表
  */
-export async function copyFiles(srcDir, destDir) {
+export async function copyFiles(srcDir, destDir, specificFiles = []) {
     try {
         await mkdirIfNotExists(destDir);
-
         const files = await readCurrentDir(srcDir);
 
-        for (const file of files) {
+        const filesToCopy = specificFiles.length > 0
+            ? files.filter(file => specificFiles.includes(file))
+            : files;
+
+        logger.info(`[R插件][拷贝文件] 正在将 ${ srcDir } 的文件拷贝到 ${ destDir } 中`);
+
+        const copiedFiles = [];
+
+        for (const file of filesToCopy) {
             const srcFile = path.join(srcDir, file);
             const destFile = path.join(destDir, file);
-            await fs.promises.copyFile(srcFile, destFile);
+            await fs.copyFile(srcFile, destFile);
+            copiedFiles.push(file);
         }
+
+        logger.info(`[R插件][拷贝文件] 拷贝完成`);
+
+        return copiedFiles;
     } catch (error) {
-        logger.error(error);
+        handleError(error);
+        return [];
     }
-    return null;
 }
 
 /**
  * 转换路径图片为base64格式
- * @param filePath  图片路径
- * @return {Promise<string>}
+ * @param {string} filePath - 图片路径
+ * @returns {Promise<string>} Base64字符串
  */
 export async function toBase64(filePath) {
     try {
-        // 读取文件数据
-        const fileData = await fs.readFileSync(filePath);
-        // 将文件数据转换为Base64字符串
+        const fileData = await fs.readFile(filePath);
         const base64Data = fileData.toString('base64');
-        // 返回Base64字符串
-        return `data:${getMimeType(filePath)};base64,${base64Data}`;
+        return `data:${ getMimeType(filePath) };base64,${ base64Data }`;
     } catch (error) {
-        throw new Error(`读取文件时出错: ${error.message}`);
+        handleError(error);
     }
 }
 
 /**
  * 辅助函数：根据文件扩展名获取MIME类型
- * @param filePath
- * @return {*|string}
+ * @param {string} filePath - 文件路径
+ * @returns {string} MIME类型
  */
 function getMimeType(filePath) {
-    const mimeTypes = {
-        '.jpg': 'image/jpeg',
-        '.jpeg': 'image/jpeg',
-        '.png': 'image/png',
-        '.gif': 'image/gif',
-        '.pdf': 'application/pdf',
-        '.txt': 'text/plain',
-        // 添加其他文件类型和MIME类型的映射
-    };
-
-    const ext = filePath.substring(filePath.lastIndexOf('.')).toLowerCase();
+    const ext = path.extname(filePath).toLowerCase();
     return mimeTypes[ext] || 'application/octet-stream';
+}
+
+/**
+ * 获取文件夹中的图片和视频文件
+ * @param {string} folderPath - 要检测的文件夹路径
+ * @returns {Promise<Object>} 包含图片和视频文件名的对象
+ */
+export async function getMediaFilesAndOthers(folderPath) {
+    try {
+        const files = await fs.readdir(folderPath);
+        const imageExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp'];
+        const videoExtensions = ['.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm'];
+
+        const images = [];
+        const videos = [];
+        const others = [];
+
+        files.forEach(file => {
+            const ext = path.extname(file).toLowerCase();
+            if (imageExtensions.includes(ext)) {
+                images.push(file);
+            } else if (videoExtensions.includes(ext)) {
+                videos.push(file);
+            } else {
+                others.push(file);
+            }
+        });
+
+        return { images, videos, others };
+    } catch (err) {
+        handleError(err);
+    }
 }

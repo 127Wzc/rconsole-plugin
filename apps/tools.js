@@ -1,19 +1,64 @@
-// 主库
-import fetch from "node-fetch";
-import fs from "node:fs";
-import {Buffer} from 'node:buffer';
-// 其他库
 import axios from "axios";
+import { exec, execSync } from "child_process";
+import { HttpsProxyAgent } from 'https-proxy-agent';
 import _ from "lodash";
-import tunnel from "tunnel";
-import {HttpsProxyAgent} from 'https-proxy-agent';
-import {exec, execSync} from "child_process";
-import {checkAndRemoveFile, deleteFolderRecursive, mkdirIfNotExists} from "../utils/file.js";
+import fetch from "node-fetch";
+import { Buffer } from 'node:buffer';
+import fs from "node:fs";
+import PQueue from 'p-queue';
+import path from "path";
+import querystring from "querystring";
 import {
+    BILI_CDN_SELECT_LIST,
+    BILI_DEFAULT_INTRO_LEN_LIMIT,
+    COMMON_USER_AGENT,
+    DIVIDING_LINE,
+    douyinTypeMap,
+    DOWNLOAD_WAIT_DETECT_FILE_TIME,
+    HELP_DOC,
+    MESSAGE_RECALL_TIME,
+    REDIS_YUNZAI_ISOVERSEA,
+    REDIS_YUNZAI_LAGRANGE,
+    REDIS_YUNZAI_WHITELIST,
+    SUMMARY_PROMPT,
+    transMap,
+    TWITTER_BEARER_TOKEN,
+    XHS_NO_WATERMARK_HEADER,
+} from "../constants/constant.js";
+import {
+    ANIME_SERIES_SEARCH_LINK,
+    ANIME_SERIES_SEARCH_LINK2,
+    BILI_EP_INFO,
+    BILI_ONLINE,
+    BILI_SSID_INFO,
+    BILI_STREAM_INFO,
+    BILI_SUMMARY,
+    DY_COMMENT,
+    DY_INFO,
+    DY_TOUTIAO_INFO,
+    GENERAL_REQ_LINK,
+    HIBI_API_SERVICE,
+    MIYOUSHE_ARTICLE,
+    NETEASE_API_CN,
+    NETEASE_SONG_DOWNLOAD,
+    NETEASE_TEMP_API,
+    QISHUI_MUSIC_TEMP_API,
+    QQ_MUSIC_TEMP_API,
+    TWITTER_TWEET_INFO,
+    WEIBO_SINGLE_INFO,
+    WEISHI_VIDEO_INFO,
+    XHS_REQ_LINK
+} from "../constants/tools.js";
+import config from "../model/config.js";
+import * as aBogus from "../utils/a-bogus.cjs";
+import { downloadM3u8Videos, mergeAcFileToMp4, parseM3u8, parseUrl } from "../utils/acfun.js";
+import { startBBDown } from "../utils/bbdown-util.js";
+import { av2BV } from "../utils/bilibili-bv-av-convert.js";
+import {
+    BILI_HEADER,
     downloadBFile,
     filterBiliDescLink,
     getBiliAudio,
-    getBiliVideoWithSession,
     getDownloadUrl,
     getDynamic,
     getScanCodeData,
@@ -21,67 +66,41 @@ import {
     m4sToMp3,
     mergeFileToMp4
 } from "../utils/bilibili.js";
-import {downloadM3u8Videos, mergeAcFileToMp4, parseM3u8, parseUrl} from "../utils/acfun.js";
+import { getWbi } from "../utils/biliWbi.js";
+import { getBodianAudio, getBodianMusicInfo, getBodianMv } from "../utils/bodian.js";
 import {
-    BILI_DEFAULT_INTRO_LEN_LIMIT,
-    COMMON_USER_AGENT,
-    DIVIDING_LINE,
-    douyinTypeMap,
-    HELP_DOC,
-    IMAGE_TRANSLATION_PROMPT,
-    REDIS_YUNZAI_ISOVERSEA,
-    REDIS_YUNZAI_LAGRANGE,
-    SUMMARY_PROMPT,
-    transMap,
-    TWITTER_BEARER_TOKEN,
-    XHS_NO_WATERMARK_HEADER,
-} from "../constants/constant.js";
-import {
-    checkCommandExists,
+    checkToolInCurEnv,
     cleanFilename,
     downloadAudio,
     downloadImg,
     estimateReadingTime,
     formatBiliInfo,
-    retryAxiosReq, saveJsonToFile,
+    retryAxiosReq,
     secondsToTime,
     testProxy,
-    truncateString
+    truncateString,
+    urlTransformShortLink
 } from "../utils/common.js";
-import config from "../model/index.js";
-import Translate from "../utils/trans-strategy.js";
-import * as aBogus from "../utils/a-bogus.cjs";
-import {getBodianAudio, getBodianMusicInfo, getBodianMv} from "../utils/bodian.js";
-import {av2BV} from "../utils/bilibili-bv-av-convert.js";
-import querystring from "querystring";
-import PQueue from 'p-queue';
-import {getWbi} from "../utils/biliWbi.js";
+import { extractKeyframes } from "../utils/ffmpeg-util.js";
 import {
-    BILI_STREAM_INFO,
-    BILI_SUMMARY,
-    DY_COMMENT,
-    DY_INFO,
-    DY_TOUTIAO_INFO,
-    GENERAL_REQ_LINK,
-    MIYOUSHE_ARTICLE,
-    NETEASE_API_CN,
-    NETEASE_SONG_DOWNLOAD,
-    NETEASE_TEMP_API,
-    QQ_MUSIC_TEMP_API,
-    TWITTER_TWEET_INFO,
-    WEIBO_SINGLE_INFO,
-    WEISHI_VIDEO_INFO,
-    XHS_REQ_LINK
-} from "../constants/tools.js";
-import {processTikTokUrl} from "../utils/tiktok.js";
-import {getDS} from "../utils/mihoyo.js";
+    checkAndRemoveFile,
+    deleteFolderRecursive,
+    getMediaFilesAndOthers,
+    mkdirIfNotExists,
+    readCurrentDir
+} from "../utils/file.js";
 import GeneralLinkAdapter from "../utils/general-link-adapter.js";
-import {mid2id} from "../utils/weibo.js";
-import {LagrangeAdapter} from "../utils/lagrange-adapter.js";
-import path from "path";
-import {OpenaiBuilder} from "../utils/openai-builder.js";
-import {contentEstimator} from "../utils/link-share-summary-util.js";
-import {checkBBDown, startBBDown} from "../utils/bbdown-util.js";
+import { LagrangeAdapter } from "../utils/lagrange-adapter.js";
+import { contentEstimator } from "../utils/link-share-summary-util.js";
+import { deepSeekChat, llmRead } from "../utils/llm-util.js";
+import { getDS } from "../utils/mihoyo.js";
+import { OpenaiBuilder } from "../utils/openai-builder.js";
+import { redisExistKey, redisGetKey, redisSetKey } from "../utils/redis-util.js";
+import { saveTDL, startTDL } from "../utils/tdl-util.js";
+import Translate from "../utils/trans-strategy.js";
+import { mid2id } from "../utils/weibo.js";
+import { ytDlpGetTilt, ytDlpHelper } from "../utils/yt-dlp-util.js";
+import { textArrayToMakeForward } from "../utils/yunzai-util.js";
 
 export class tools extends plugin {
     /**
@@ -105,7 +124,7 @@ export class tools extends plugin {
             priority: 300,
             rule: [
                 {
-                    reg: `^(翻|trans)[${tools.Constants.existsTransKey}]`,
+                    reg: `^(翻|trans)[${ tools.Constants.existsTransKey }]`,
                     fnc: "trans",
                 },
                 {
@@ -142,7 +161,7 @@ export class tools extends plugin {
                     fnc: "bodianMusic",
                 },
                 {
-                    reg: "(kuaishou.com|ixigua.com|h5.pipix.com|h5.pipigx.com|tieba.baidu.com|s.xsj.qq.com|m.okjike.com)",
+                    reg: "(kuaishou.com|ixigua.com|h5.pipix.com|h5.pipigx.com|s.xsj.qq.com|m.okjike.com)",
                     fnc: "general",
                 },
                 {
@@ -162,11 +181,7 @@ export class tools extends plugin {
                     fnc: "weibo",
                 },
                 {
-                    reg: "(pixivision.net)",
-                    fnc: "pixivision"
-                },
-                {
-                    reg: "(isee.weishi.qq.com)",
+                    reg: "(weishi.qq.com)",
                     fnc: "weishi"
                 },
                 {
@@ -178,12 +193,8 @@ export class tools extends plugin {
                     fnc: "freyr"
                 },
                 {
-                    reg: "(mp.weixin|arxiv.org|sspai.com|chinadaily.com.cn)",
+                    reg: "(^#总结一下(http|https):\/\/.*|mp.weixin|arxiv.org|sspai.com|chinadaily.com.cn|zhihu.com)",
                     fnc: "linkShareSummary"
-                },
-                {
-                    reg: "#(RPT|rpt)$",
-                    fnc: "pictureTranslate"
                 },
                 {
                     reg: "(y.qq.com)",
@@ -192,6 +203,18 @@ export class tools extends plugin {
                 {
                     reg: "(qishui.douyin.com)",
                     fnc: "qishuiMusic"
+                },
+                {
+                    reg: "https:\\/\\/t\\.me\\/(?:c\\/\\d+\\/\\d+\\/\\d+|c\\/\\d+\\/\\d+|\\w+\\/\\d+\\/\\d+|\\w+\\/\\d+\\?\\w+=\\d+|\\w+\\/\\d+)",
+                    fnc: "aircraft"
+                },
+                {
+                    reg: "tieba.baidu.com",
+                    fnc: "tieba"
+                },
+                {
+                    reg: '^#验车(.*?)',
+                    fnc: 'yc'
                 }
             ],
         });
@@ -204,13 +227,31 @@ export class tools extends plugin {
         // 魔法接口
         this.proxyAddr = this.toolsConfig.proxyAddr;
         this.proxyPort = this.toolsConfig.proxyPort;
-        this.myProxy = `http://${this.proxyAddr}:${this.proxyPort}`;
+        this.myProxy = `http://${ this.proxyAddr }:${ this.proxyPort }`;
+        // 加载识别前缀
+        this.identifyPrefix = this.toolsConfig.identifyPrefix;
         // 加载哔哩哔哩配置
         this.biliSessData = this.toolsConfig.biliSessData;
         // 加载哔哩哔哩的限制时长
         this.biliDuration = this.toolsConfig.biliDuration;
+        // 加载是否显示哔哩哔哩的封面
+        this.biliDisplayCover = this.toolsConfig.biliDisplayCover;
+        // 加载是否显示哔哩哔哩的视频信息
+        this.biliDisplayInfo = this.toolsConfig.biliDisplayInfo;
+        // 加载是否显示哔哩哔哩的简介
+        this.biliDisplayIntro = this.toolsConfig.biliDisplayIntro;
+        // 加载是否显示哔哩哔哩的在线人数
+        this.biliDisplayOnline = this.toolsConfig.biliDisplayOnline;
+        // 加载是否显示哔哩哔哩的总结
+        this.biliDisplaySummary = this.toolsConfig.biliDisplaySummary;
         // 加载哔哩哔哩是否使用BBDown
         this.biliUseBBDown = this.toolsConfig.biliUseBBDown;
+        // 加载 BBDown 的CDN配置
+        this.biliCDN = this.toolsConfig.biliCDN;
+        // 加载哔哩哔哩是否使用Aria2
+        this.biliDownloadMethod = this.toolsConfig.biliDownloadMethod;
+        // 加载哔哩哔哩最高分辨率
+        this.biliResolution = this.toolsConfig.biliResolution;
         // 加载抖音Cookie
         this.douyinCookie = this.toolsConfig.douyinCookie;
         // 加载抖音是否压缩
@@ -221,12 +262,11 @@ export class tools extends plugin {
         this.xiaohongshuCookie = this.toolsConfig.xiaohongshuCookie;
         // 翻译引擎
         this.translateEngine = new Translate({
-            translateAppId: this.toolsConfig.translateAppId,
-            translateSecret: this.toolsConfig.translateSecret,
+            deeplApiUrls: this.toolsConfig.deeplApiUrls,
             proxy: this.myProxy,
         });
         // 并发队列
-        this.queue = new PQueue({concurrency: Number(this.toolsConfig.queueConcurrency)});
+        this.queue = new PQueue({ concurrency: Number(this.toolsConfig.queueConcurrency) });
         // 视频下载的并发数量
         this.videoDownloadConcurrency = this.toolsConfig.videoDownloadConcurrency;
         // ai接口
@@ -240,7 +280,7 @@ export class tools extends plugin {
     // 翻译插件
     async trans(e) {
         const languageReg = /翻(.)/s;
-        const msg = e.msg.trim();
+        let msg = e.msg.trim();
         const language = languageReg.exec(msg);
         if (!(language[1] in transMap)) {
             e.reply(
@@ -248,7 +288,15 @@ export class tools extends plugin {
             );
             return;
         }
-        const place = msg.slice(1 + language[1].length)
+        let place = msg.slice(1 + language[1].length)
+        if (_.isEmpty(place)) {
+            const reply = await e?.getReply();
+            if (reply !== undefined) {
+                place = reply.message.find(item => item.text !== undefined).text;
+            } else {
+                return;
+            }
+        }
         // 如果没有百度那就Google
         const translateResult = await this.translateEngine.translate(place, language[1]);
         e.reply(translateResult.trim(), true);
@@ -263,7 +311,7 @@ export class tools extends plugin {
         const res = await this.douyinRequest(douUrl);
         // 当前版本需要填入cookie
         if (_.isEmpty(this.douyinCookie)) {
-            e.reply(`检测到没有Cookie，无法解析抖音${HELP_DOC}`);
+            e.reply(`检测到没有Cookie，无法解析抖音${ HELP_DOC }`);
             return;
         }
         const douId = /note\/(\d+)/g.exec(res)?.[1] || /video\/(\d+)/g.exec(res)?.[1];
@@ -284,8 +332,8 @@ export class tools extends plugin {
             headers["User-Agent"],
         );
         // const param = resp.data.result[0].paramsencode;
-        const resDyApi = `${dyApi}&a_bogus=${abParam}`;
-        headers['Referer'] = `https://www.douyin.com/video/${douId}`
+        const resDyApi = `${ dyApi }&a_bogus=${ abParam }`;
+        headers['Referer'] = `https://www.douyin.com/video/${ douId }`
         // 定义一个dy请求
         const dyResponse = () => axios.get(resDyApi, {
             headers,
@@ -293,32 +341,39 @@ export class tools extends plugin {
         // 如果失败进行3次重试
         try {
             const data = await retryAxiosReq(dyResponse)
-
             // logger.info(data)
             const item = await data.aweme_detail;
+            // await saveJsonToFile(item);
+            // 如果为null则退出
+            if (item == null) {
+                e.reply("R插件无法识别到当前抖音内容，请换一个试试！");
+                return;
+            }
             const urlTypeCode = item.aweme_type;
             const urlType = douyinTypeMap[urlTypeCode];
             // 核心内容
             if (urlType === "video") {
                 // logger.info(item.video);
                 // 多位面选择：play_addr、play_addr_265、play_addr_h264
-                const {play_addr: {uri: videoAddrURI}, duration, cover} = item.video;
+                const { play_addr: { uri: videoAddrURI }, duration, cover } = item.video;
                 // 进行时间判断，如果超过时间阈值就不发送
                 const dyDuration = Math.trunc(duration / 1000);
                 const durationThreshold = this.biliDuration;
+                // 一些共同发送内容
+                let dySendContent = `${ this.identifyPrefix } 识别：抖音，${ item.author.nickname }\n📝 简介：${ item.desc }`;
                 if (dyDuration >= durationThreshold) {
                     // 超过阈值，不发送的情况
+                    // 封面
                     const dyCover = cover.url_list?.pop();
                     // logger.info(cover.url_list);
-                    e.reply([segment.image(dyCover), `识别：抖音, ${item.desc}\n
-                    ${DIVIDING_LINE.replace('{}', '限制说明')}\n当前视频时长约：${Math.trunc(dyDuration / 60)}分钟，\n大于管理员设置的最大时长 ${durationThreshold / 60} 分钟！`])
+                    dySendContent += `\n
+                    ${ DIVIDING_LINE.replace('{}', '限制说明') }\n当前视频时长约：${ Math.trunc(dyDuration / 60) }分钟，\n大于管理员设置的最大时长 ${ durationThreshold / 60 } 分钟！`;
+                    e.reply([segment.image(dyCover), dySendContent]);
                     // 如果开启评论的就调用
                     await this.douyinComment(e, douId, headers);
                     return;
-                } else {
-                    // 正常发送
-                    e.reply(`识别：抖音, ${item.desc}`);
                 }
+                e.reply(`${ dySendContent }`);
                 // 分辨率判断是否压缩
                 const resolution = this.douyinCompression ? "720p" : "1080p";
                 // 使用今日头条 CDN 进一步加快解析速度
@@ -337,16 +392,14 @@ export class tools extends plugin {
                 }*/
 
                 // logger.info(resUrl);
-                const path = `${this.getCurDownloadPath(e)}/temp.mp4`;
+                const path = `${ this.getCurDownloadPath(e) }/temp.mp4`;
                 // 加入队列
-                this.queue.add(async () => {
-                    await this.downloadVideo(resUrl).then(() => {
-                        this.sendVideoToUpload(e, path)
-                    });
-                })
+                await this.downloadVideo(resUrl).then(() => {
+                    this.sendVideoToUpload(e, path)
+                });
             } else if (urlType === "image") {
                 // 发送描述
-                e.reply(`识别：抖音, ${item.desc}`);
+                e.reply(`${ this.identifyPrefix } 识别：抖音, ${ item.desc }`);
                 // 无水印图片列表
                 let no_watermark_image_list = [];
                 // 有水印图片列表
@@ -363,13 +416,13 @@ export class tools extends plugin {
                     // e.reply(segment.image(i.url_list[0]));
                 }
                 // console.log(no_watermark_image_list)
-                await this.reply(await Bot.makeForwardMsg(no_watermark_image_list));
+                await e.reply(await Bot.makeForwardMsg(no_watermark_image_list));
             }
             // 如果开启评论的就调用
             await this.douyinComment(e, douId, headers);
         } catch (err) {
             logger.error(err);
-            logger.mark(`Cookie 过期或者 Cookie 没有填写，请参考\n${HELP_DOC}\n尝试无效后可以到官方QQ群[575663150]提出 bug 等待解决`)
+            logger.mark(`Cookie 过期或者 Cookie 没有填写，请参考\n${ HELP_DOC }\n尝试无效后可以到官方QQ群[575663150]提出 bug 等待解决`)
         }
         return true;
     }
@@ -389,7 +442,7 @@ export class tools extends plugin {
             new URLSearchParams(new URL(dyCommentUrl).search).toString(),
             headers["User-Agent"],
         );
-        const commentsResp = await axios.get(`${dyCommentUrl}&a_bogus=${abParam}`, {
+        const commentsResp = await axios.get(`${ dyCommentUrl }&a_bogus=${ abParam }`, {
             headers
         })
         // logger.info(headers)
@@ -415,7 +468,7 @@ export class tools extends plugin {
             return false;
         }
         // 处理链接
-        let url = await processTikTokUrl(e.msg.trim(), isOversea, this.myProxy);
+        let url = e.msg.trim();
         // 去除多余参数
         const parsedUrl = new URL(url);
         parsedUrl.search = '';
@@ -423,49 +476,27 @@ export class tools extends plugin {
         // 下载逻辑
         const path = this.getCurDownloadPath(e);
         await checkAndRemoveFile(path + "/temp.mp4");
-        const title = execSync(`yt-dlp --get-title ${cleanedTiktokUrl} ${isOversea ? "" : `--proxy ${this.myProxy}`}`)
-        e.reply(`识别：TikTok，视频下载中请耐心等待 \n${title}`);
-        await this.tiktokHelper(path, cleanedTiktokUrl, isOversea);
-        await this.sendVideoToUpload(e, `${path}/temp.mp4`);
+        const title = ytDlpGetTilt(url, isOversea, this.myProxy);
+        e.reply(`${ this.identifyPrefix } 识别：TikTok，视频下载中请耐心等待 \n${ title }`);
+        await ytDlpHelper(path, cleanedTiktokUrl, isOversea, this.myProxy);
+        await this.sendVideoToUpload(e, `${ path }/temp.mp4`);
         return true;
     }
 
 
-    /**
-     * yt-dlp for tiktok 工具
-     * @returns {Promise<void>}
-     * @param path      下载路径
-     * @param url       下载链接
-     * @param isOversea 是否是海外用户
-     */
-    async tiktokHelper(path, url, isOversea) {
-        return new Promise((resolve, reject) => {
-            const command = `yt-dlp ${isOversea ? "" : `--proxy ${this.myProxy}`} -P ${path} -o "temp.%(ext)s" ${url}`;
-            exec(command, (error, stdout) => {
-                if (error) {
-                    console.error(`Error executing command: ${error}`);
-                    reject(error);
-                } else {
-                    console.log(`Command output: ${stdout}`);
-                    resolve(stdout);
-                }
-            });
-        });
-    }
-
     // 哔哩哔哩扫码登录
     async biliScan(e) {
-        e.reply('R插件开源免责声明:\n您将通过扫码完成获取哔哩哔哩refresh_token以及ck。\n本Bot将不会保存您的登录状态。\n我方仅提供视频解析及相关B站内容服务,若您的账号封禁、被盗等处罚与我方无关。\n害怕风险请勿扫码 ~', {recallMsg: 180});
+        e.reply('R插件开源免责声明:\n您将通过扫码完成获取哔哩哔哩refresh_token以及ck。\n本Bot将不会保存您的登录状态。\n我方仅提供视频解析及相关B站内容服务,若您的账号封禁、被盗等处罚与我方无关。\n害怕风险请勿扫码 ~', { recallMsg: 180 });
         // 图片发送钩子
         const imgSendHook = function (e, path) {
-            e.reply([segment.image(path), segment.at(e.user_id), '请扫码以完成获取'], {recallMsg: 180})
+            e.reply([segment.image(path), segment.at(e.user_id), '请扫码以完成获取'], { recallMsg: 180 })
         };
         // 检查路径是否存在文件夹
         await mkdirIfNotExists(this.defaultPath);
         // 发送请求
-        const saveCodePath = `${this.defaultPath}qrcode.png`;
+        const saveCodePath = `${ this.defaultPath }qrcode.png`;
 
-        const {SESSDATA, refresh_token} = await getScanCodeData(saveCodePath, 8, () => imgSendHook(e, saveCodePath))
+        const { SESSDATA, refresh_token } = await getScanCodeData(saveCodePath, 8, () => imgSendHook(e, saveCodePath))
 
         // 更新到配置文件
         config.updateField("tools", "biliSessData", SESSDATA);
@@ -480,7 +511,7 @@ export class tools extends plugin {
         let url = e.msg === undefined ? e.message.shift().data.replaceAll("\\", "") : e.msg.trim().replaceAll("\\", "");
         // 直接发送BV号的处理
         if (/^BV[1-9a-zA-Z]{10}$/.exec(url)?.[0]) {
-            url = `https://www.bilibili.com/video/${url}`;
+            url = `https://www.bilibili.com/video/${ url }`;
             logger.info(url)
         }
         // 短号处理
@@ -512,11 +543,11 @@ export class tools extends plugin {
             // 提取相关信息
             const liveData = await this.getBiliStream(streamId);
             // logger.info(liveData);
-            const {title, user_cover, keyframe, description, tags} = liveData.data.data;
+            const { title, user_cover, keyframe, description, tags } = liveData.data.data;
             e.reply([
                 segment.image(user_cover),
                 segment.image(keyframe),
-                `识别：哔哩哔哩直播，${title}${description ? `\n\n简述：${description}\n` : ''}${tags ? `标签：${tags}\n` : ''}`
+                `${ this.identifyPrefix } 识别：哔哩哔哩直播，${ title }${ description ? `\n\n简述：${ description }\n` : '' }${ tags ? `标签：${ tags }\n` : '' }`
             ]);
             return true;
         }
@@ -524,21 +555,6 @@ export class tools extends plugin {
         if (e.msg !== undefined && e.msg.includes("read\/cv")) {
             this.linkShareSummary(e);
             return true;
-        }
-        // 处理下载逻辑
-        if (e.msg !== undefined && e.msg.startsWith("下载")) {
-            // 检测是否扫码了，如果没有扫码数据终止下载
-            if (_.isEmpty(this.biliSessData)) {
-                e.reply("检测到没有填写biliSessData，下载终止！");
-                return true;
-            }
-            await this.downloadBiliVideo(e, url, this.biliSessData);
-            return true;
-        }
-        // 只提取音乐处理
-        if (e.msg !== undefined && e.msg.includes("音乐")) {
-            e.reply("识别：哔哩哔哩音乐，正在提取请稍候...")
-            return await this.biliMusic(e, url);
         }
         // 动态处理
         if (url.includes("t.bilibili.com") || url.includes("bilibili.com\/opus")) {
@@ -549,58 +565,144 @@ export class tools extends plugin {
             url = this.biliDynamic(e, url, this.biliSessData);
             return true;
         }
+        // 创建文件，如果不存在，
+        const path = `${ this.getCurDownloadPath(e) }/`;
+        await mkdirIfNotExists(path);
+        // 处理番剧
+        if (url.includes("play\/ep") || url.includes("play\/ss")) {
+            const ep = await this.biliEpInfo(url, e);
+            // 如果使用了BBDown && 没有填写session 就放开下载
+            if (this.biliUseBBDown) {
+                // 下载文件
+                await this.biliDownloadStrategy(e, `https://www.bilibili.com/bangumi/play/ep${ ep }`, path);
+            }
+            return true;
+        }
         // 视频信息获取例子：http://api.bilibili.com/x/web-interface/view?bvid=BV1hY411m7cB
         // 请求视频信息
         const videoInfo = await getVideoInfo(url);
-        const {title, pic, desc, duration, dynamic, stat, bvid, aid, cid, owner, pages} = videoInfo;
-        // 视频信息
-        let {view, danmaku, reply, favorite, coin, share, like} = stat;
+        const { duration, bvid, cid, owner, pages } = videoInfo;
         // 限制时长 & 考虑分页视频情况
         const query = querystring.parse(url);
         const curPage = query?.p || 0;
         const curDuration = pages?.[curPage]?.duration || duration;
         const isLimitDuration = curDuration > this.biliDuration
-        // 构造一个可扩展的Map
-        const dataProcessMap = {
-            "点赞": like,
-            "硬币": coin,
-            "收藏": favorite,
-            "分享": share,
-            "总播放量": view,
-            "弹幕数量": danmaku,
-            "评论": reply
-        };
-        // 过滤简介中的一些链接
-        const filteredDesc = await filterBiliDescLink(desc);
-        // 格式化数据
-        const combineContent = `\n${formatBiliInfo(dataProcessMap)}\n简介：${truncateString(filteredDesc, this.toolsConfig.biliIntroLenLimit || BILI_DEFAULT_INTRO_LEN_LIMIT)}`;
-        let biliInfo = [`识别：哔哩哔哩：${title}`, combineContent]
+        // 动态构造哔哩哔哩信息
+        let biliInfo = await this.constructBiliInfo(videoInfo);
         // 总结
-        const summary = await this.getBiliSummary(bvid, cid, owner.mid);
-        // 不提取音乐，正常处理
+        if (this.biliDisplaySummary) {
+            const summary = await this.getBiliSummary(bvid, cid, owner.mid);
+            // 封装总结
+            summary && e.reply(await Bot.makeForwardMsg(textArrayToMakeForward(e, [`「R插件 x bilibili」联合为您总结内容：`, summary])));
+        }
+        // 限制视频解析
         if (isLimitDuration) {
-            // 加入图片
-            biliInfo.unshift(segment.image(pic))
-            // 限制视频解析
             const durationInMinutes = (curDuration / 60).toFixed(0);
-            biliInfo.push(`${DIVIDING_LINE.replace('{}', '限制说明')}\n当前视频时长约：${durationInMinutes}分钟，\n大于管理员设置的最大时长 ${this.biliDuration / 60} 分钟！`)
-            summary && biliInfo.push(`\n${summary}`);
+            biliInfo.push(`${ DIVIDING_LINE.replace('{}', '限制说明') }\n当前视频时长约：${ durationInMinutes }分钟，\n大于管理员设置的最大时长 ${ this.biliDuration / 60 } 分钟！`);
             e.reply(biliInfo);
             return true;
         } else {
-            summary && biliInfo.push(`\n${summary}`);
             e.reply(biliInfo);
         }
-
-        // 创建文件，如果不存在
-        const path = `${this.getCurDownloadPath(e)}/`;
-        await mkdirIfNotExists(path);
-        // 加入队列
-        this.queue.add(async () => {
-            // 下载文件
-            await this.biliDownloadStrategy(e, url, path);
-        })
+        // 只提取音乐处理
+        if (e.msg !== undefined && e.msg.startsWith("音乐")) {
+            return await this.biliMusic(e, url);
+        }
+        // 下载文件
+        await this.biliDownloadStrategy(e, url, path);
         return true;
+    }
+
+    /**
+     * 构造哔哩哔哩信息
+     * @param videoInfo
+     * @returns {Promise<(string|string)[]>}
+     */
+    async constructBiliInfo(videoInfo) {
+        const { title, desc, bvid, cid, pic } = videoInfo;
+        // 视频信息
+        const { view, danmaku, reply, favorite, coin, share, like } = videoInfo.stat;
+        // 格式化数据
+        let combineContent = "";
+        // 是否显示信息
+        if (this.biliDisplayInfo) {
+            // 构造一个可扩展的Map
+            const dataProcessMap = {
+                "点赞": like,
+                "硬币": coin,
+                "收藏": favorite,
+                "分享": share,
+                "总播放量": view,
+                "弹幕数量": danmaku,
+                "评论": reply
+            };
+            combineContent += `\n${ formatBiliInfo(dataProcessMap) }`;
+        }
+        // 是否显示简介
+        if (this.biliDisplayIntro) {
+            // 过滤简介中的一些链接
+            const filteredDesc = await filterBiliDescLink(desc);
+            combineContent += `\n📝 简介：${ truncateString(filteredDesc, this.toolsConfig.biliIntroLenLimit || BILI_DEFAULT_INTRO_LEN_LIMIT) }`;
+        }
+        // 是否显示在线人数
+        if (this.biliDisplayOnline) {
+            // 拼接在线人数
+            const onlineTotal = await this.biliOnlineTotal(bvid, cid);
+            combineContent += `\n🏄‍♂️️ 当前视频有 ${ onlineTotal.total } 人在观看，其中 ${ onlineTotal.count } 人在网页端观看`;
+        }
+        let biliInfo = [`${ this.identifyPrefix } 识别：哔哩哔哩：${ title }`, combineContent]
+        // 是否显示封面
+        if (this.biliDisplayCover) {
+            // 加入图片
+            biliInfo.unshift(segment.image(pic));
+        }
+        return biliInfo;
+    }
+
+    /**
+     * 获取哔哩哔哩番剧信息
+     * @param url
+     * @param e
+     * @returns {Promise<void>}
+     */
+    async biliEpInfo(url, e) {
+        let ep;
+        // 处理ssid
+        if (url.includes("play\/ss")) {
+            const ssid = url.match(/\/ss(\d+)/)?.[1];
+            let resp = await (await fetch(BILI_SSID_INFO.replace("{}", ssid), {
+                headers: BILI_HEADER
+            })).json()
+            ep = (resp.result.main_section.episodes[0].share_url).replace("https://www.bilibili.com/bangumi/play/ep", "")
+        }
+        // 处理普通情况，上述情况无法处理的
+        if (_.isEmpty(ep)) {
+            ep = url.match(/\/ep(\d+)/)?.[1];
+        }
+        const resp = await (await fetch(BILI_EP_INFO.replace("{}", ep), {
+            headers: BILI_HEADER
+        })).json();
+        const result = resp.result;
+        const { views, danmakus, likes, coins, favorites, favorite } = result.stat;
+        // 封装成可以format的数据
+        const dataProcessMap = {
+            "播放": views,
+            "弹幕": danmakus,
+            "点赞": likes,
+            "分享": coins,
+            "追番": favorites,
+            "收藏": favorite,
+        };
+        // 截断标题，查看Redis中是否存在，避免频繁走网络连接
+        const title = result.title;
+        e.reply([
+            segment.image(resp.result.cover),
+            `${ this.identifyPrefix }识别：哔哩哔哩番剧，${ title }\n🎯 评分: ${ result?.rating?.score ?? '-' } / ${ result?.rating?.count ?? '-' }\n📺 ${ result.new_ep.desc }, ${ result.seasons[0].new_ep.index_show }\n`,
+            `${ formatBiliInfo(dataProcessMap) }`,
+            `\n\n🪶 在线观看： ${ await urlTransformShortLink(ANIME_SERIES_SEARCH_LINK + title) }`,
+            `\n🌸 在线观看： ${ await urlTransformShortLink(ANIME_SERIES_SEARCH_LINK2 + title) }`
+        ], true);
+        return ep;
     }
 
     /**
@@ -611,82 +713,60 @@ export class tools extends plugin {
      * @returns {Promise<void>}
      */
     async biliDownloadStrategy(e, url, path) {
-        // =================以下是调用BBDown的逻辑=====================
-        // 下载视频和音频
-        const tempPath = `${path}temp`;
-        // 检测是否开启BBDown
-        if (this.biliUseBBDown) {
-            // 检测环境的 BBDown
-            const isExistBBDown = await checkBBDown();
-            // 存在 BBDown
-            if (isExistBBDown) {
-                // 删除之前的文件
-                await checkAndRemoveFile(`${tempPath}.mp4`);
-                // 下载视频
-                await startBBDown(url, path, this.biliSessData);
-                // 发送视频
-                return this.sendVideoToUpload(e, `${tempPath}.mp4`);
+        return this.queue.add(async () => {
+            // =================以下是调用BBDown的逻辑=====================
+            // 下载视频和音频
+            const tempPath = `${ path }temp`;
+            // 检测是否开启BBDown
+            if (this.biliUseBBDown) {
+                // 检测环境的 BBDown
+                const isExistBBDown = await checkToolInCurEnv("BBDown");
+                // 存在 BBDown
+                if (isExistBBDown) {
+                    // 删除之前的文件
+                    await checkAndRemoveFile(`${ tempPath }.mp4`);
+                    // 下载视频
+                    await startBBDown(url, path, {
+                        biliSessData: this.biliSessData,
+                        biliUseAria2: this.biliDownloadMethod === 1,
+                        biliCDN: BILI_CDN_SELECT_LIST.find(item => item.value === this.biliCDN)?.sign,
+                        biliResolution: this.biliResolution,
+                    });
+                    // 发送视频
+                    return this.sendVideoToUpload(e, `${ tempPath }.mp4`);
+                }
+                e.reply("🚧 R插件提醒你：开启但未检测到当前环境有【BBDown】，即将使用默认下载方式 ( ◡̀_◡́)ᕤ");
             }
-            e.reply("🚧 R插件提醒你：开启但未检测到当前环境有【BBDown】，即将使用默认下载方式 ( ◡̀_◡́)ᕤ");
-        }
-        // =================默认下载方式=====================
-        try {
-            // 获取下载链接
-            const data = await getDownloadUrl(url);
+            // =================默认下载方式=====================
+            try {
+                // 获取下载链接
+                const data = await getDownloadUrl(url, this.biliSessData);
 
-            await this.downBili(tempPath, data.videoUrl, data.audioUrl);
+                await this.downBili(tempPath, data.videoUrl, data.audioUrl);
 
-            // 上传视频
-            return this.sendVideoToUpload(e, `${tempPath}.mp4`);
-        } catch (err) {
-            // 错误处理
-            logger.error('[R插件][哔哩哔哩视频发送]下载错误，具体原因为:', err);
-            e.reply("解析失败，请重试一下");
-        }
+                // 上传视频
+                return this.sendVideoToUpload(e, `${ tempPath }.mp4`);
+            } catch (err) {
+                // 错误处理
+                logger.error('[R插件][哔哩哔哩视频发送]下载错误，具体原因为:', err);
+                e.reply("解析失败，请重试一下");
+            }
+        })
     }
 
     /**
-     * 下载哔哩哔哩最高画质视频
-     * @param e         交互事件
-     * @param url       下载链接
-     * @param SESSDATA  ck
-     * @returns {Promise<boolean>}
+     * 获取在线人数
+     * @param bvid
+     * @param cid
+     * @returns {Promise<{total: *, count: *}>}
      */
-    async downloadBiliVideo(e, url, SESSDATA) {
-        const videoId = /video\/[^\?\/ ]+/.exec(url)[0].split("/")[1];
-        const dash = await getBiliVideoWithSession(videoId, "", SESSDATA);
-        // 限制时长，防止下载大视频卡死。暂时这样设计
-        const curDuration = dash.duration;
-        const isLimitDuration = curDuration > this.biliDuration;
-        if (isLimitDuration) {
-            const durationInMinutes = (curDuration / 60).toFixed(0);
-            e.reply(`当前视频（${videoId}）时长为 ${durationInMinutes} 分钟，大于管理员设置的时长 ${this.biliDuration / 60} 分钟`);
-            return true;
+    async biliOnlineTotal(bvid, cid) {
+        const onlineResp = await axios.get(BILI_ONLINE.replace("{0}", bvid).replace("{1}", cid));
+        const online = onlineResp.data.data;
+        return {
+            total: online.total,
+            count: online.count
         }
-        // 获取关键信息
-        const {video, audio} = dash;
-        const videoData = video?.[0];
-        const audioData = audio?.[0];
-        // 提取信息
-        const {height, frameRate, baseUrl: videoBaseUrl} = videoData;
-        const {baseUrl: audioBaseUrl} = audioData;
-        e.reply(`正在下载${height}p ${Math.trunc(frameRate)}帧数 视频，请稍候...`);
-        const path = `${this.getCurDownloadPath(e)}/`;
-        const that = this;
-        // 添加下载任务到并发队列
-        this.queue.add(() =>
-            that.downBili(`${path}temp`, videoBaseUrl, audioBaseUrl)
-                .then(_ => {
-                    that.sendVideoToUpload(e, `${path}temp.mp4`);
-                })
-                .catch(err => {
-                    logger.error(`[R插件][B站下载引擎] ${err}`);
-                    e.reply("解析失败，请重试一下");
-                })
-        );
-        logger.mark(`[R插件][B站下载引擎] 当前下载队列大小${this.queue.size}`);
-
-        return true;
     }
 
     // 下载哔哩哔哩音乐
@@ -714,7 +794,7 @@ export class tools extends plugin {
         const dynamicId = /[^/]+(?!.*\/)/.exec(url)[0];
         getDynamic(dynamicId, session).then(async resp => {
             if (resp.dynamicSrc.length > 0) {
-                e.reply(`识别：哔哩哔哩动态, ${resp.dynamicDesc}`);
+                e.reply(`${ this.identifyPrefix } 识别：哔哩哔哩动态, ${ resp.dynamicDesc }`);
                 let dynamicSrcMsg = [];
                 resp.dynamicSrc.forEach(item => {
                     dynamicSrcMsg.push({
@@ -723,7 +803,7 @@ export class tools extends plugin {
                         user_id: e.user_id,
                     });
                 });
-                await this.reply(await Bot.makeForwardMsg(dynamicSrcMsg));
+                await e.reply(await Bot.makeForwardMsg(dynamicSrcMsg));
             } else {
                 e.reply(`识别：哔哩哔哩动态, 但是失败！`);
             }
@@ -738,16 +818,16 @@ export class tools extends plugin {
      * @param bvid 稿件
      * @param cid 视频 cid
      * @param up_mid UP主 mid
-     * @return {Promise<void>}
+     * @return {Promise<string>}
      */
     async getBiliSummary(bvid, cid, up_mid) {
         // 这个有点用，但不多
         let wbi = "wts=1701546363&w_rid=1073871926b3ccd99bd790f0162af634"
         if (!_.isEmpty(this.biliSessData)) {
-            wbi = await getWbi({bvid, cid, up_mid}, this.biliSessData);
+            wbi = await getWbi({ bvid, cid, up_mid }, this.biliSessData);
         }
         // 构造API
-        const summaryUrl = `${BILI_SUMMARY}?${wbi}`;
+        const summaryUrl = `${ BILI_SUMMARY }?${ wbi }`;
         logger.info(summaryUrl)
         // 构造结果：https://api.bilibili.com/x/web-interface/view/conclusion/get?bvid=BV1L94y1H7CV&cid=1335073288&up_mid=297242063&wts=1701546363&w_rid=1073871926b3ccd99bd790f0162af634
         return axios.get(summaryUrl)
@@ -759,7 +839,7 @@ export class tools extends plugin {
                 let resReply = "";
                 // 总体总结
                 if (summary) {
-                    resReply = `\n摘要：${summary}\n`
+                    resReply = `\n摘要：${ summary }\n`
                 }
                 // 分段总结
                 if (outline) {
@@ -768,11 +848,11 @@ export class tools extends plugin {
                         const keyPoint = item?.part_outline;
                         // 时间点的总结
                         const specificContent = keyPoint.map(point => {
-                            const {timestamp, content} = point
+                            const { timestamp, content } = point
                             const specificTime = secondsToTime(timestamp)
-                            return `${specificTime}  ${content}\n`;
+                            return `${ specificTime }  ${ content }\n`;
                         }).join("");
-                        return `- ${smallTitle}\n${specificContent}\n`;
+                        return `- ${ smallTitle }\n${ specificContent }\n`;
                     });
                     resReply += specificTimeSummary.join("");
                 }
@@ -786,15 +866,18 @@ export class tools extends plugin {
      * @returns {Promise<*>}
      */
     async getBiliStream(liveId) {
-        return axios.get(`${BILI_STREAM_INFO}?room_id=${liveId}`, {
+        return axios.get(`${ BILI_STREAM_INFO }?room_id=${ liveId }`, {
             headers: {
                 'User-Agent': COMMON_USER_AGENT,
             }
         });
     }
 
-    // 例子：https://twitter.com/chonkyanimalx/status/1595834168000204800
+    /**
+     * @deprecated Use newFunction instead.
+     */
     async twitter(e) {
+        console.warn('警告: 函数已弃用，将在未来版本中移除');
         // 配置参数及解析
         const reg = /https?:\/\/twitter.com\/[0-9-a-zA-Z_]{1,20}\/status\/([0-9]*)/;
         const twitterUrl = reg.exec(e.msg);
@@ -812,14 +895,14 @@ export class tools extends plugin {
         await fetch(TWITTER_TWEET_INFO.replace("{}", id), {
             headers: {
                 "User-Agent": "v2TweetLookupJS",
-                "authorization": `Bearer ${Buffer.from(TWITTER_BEARER_TOKEN, "base64").toString()}`
+                "authorization": `Bearer ${ Buffer.from(TWITTER_BEARER_TOKEN, "base64").toString() }`
             },
             ...params,
             agent: !isOversea ? '' : new HttpsProxyAgent(this.myProxy),
         }).then(async resp => {
             logger.info(resp)
-            e.reply(`识别：小蓝鸟学习版，${resp.data.text}`);
-            const downloadPath = `${this.getCurDownloadPath(e)}`;
+            e.reply(`${ this.identifyPrefix } 识别：小蓝鸟学习版，${ resp.data.text }`);
+            const downloadPath = `${ this.getCurDownloadPath(e) }`;
             // 创建文件夹（如果没有过这个群）
             if (!fs.existsSync(downloadPath)) {
                 mkdirsSync(downloadPath);
@@ -834,7 +917,7 @@ export class tools extends plugin {
                     // 视频
                     await this.downloadVideo(resp.includes.media[0].variants[0].url, true).then(
                         _ => {
-                            e.reply(segment.video(`${downloadPath}/temp.mp4`));
+                            e.reply(segment.video(`${ downloadPath }/temp.mp4`));
                         },
                     );
                 }
@@ -869,8 +952,12 @@ export class tools extends plugin {
 
     // 使用现有api解析小蓝鸟
     async twitter_x(e) {
+        if (!(await this.isTrustUser(e.user_id))) {
+            e.reply("你没有权限使用此命令");
+            return;
+        }
         // 配置参数及解析
-        const reg = /https?:\/\/x.com\/[0-9-a-zA-Z_]{1,20}\/status\/([0-9]*)/;
+        const reg = /https:\/\/x\.com\/[\w]+\/status\/\d+(\/photo\/\d+)?/;
         const twitterUrl = reg.exec(e.msg)[0];
         // 检测
         const isOversea = await this.isOverseasServer();
@@ -879,69 +966,72 @@ export class tools extends plugin {
             return false;
         }
         // 提取视频
-        const videoUrl = GENERAL_REQ_LINK.link.replace("{}", twitterUrl);
-        e.reply("识别：小蓝鸟学习版");
+        let videoUrl = GENERAL_REQ_LINK.link.replace("{}", twitterUrl);
+        e.reply(`${ this.identifyPrefix } 识别：小蓝鸟学习版`);
         const config = {
             headers: {
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+                'Accept': 'ext/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+                'Accept-Encoding': 'gzip, deflate',
                 'Accept-Language': 'zh-CN,zh;q=0.9',
-                'Cache-Control': 'no-cache',
-                'Connection': 'keep-alive',
-                'Pragma': 'no-cache',
-                'Sec-Fetch-Dest': 'document',
-                'Sec-Fetch-Mode': 'navigate',
-                'Sec-Fetch-Site': 'none',
-                'Sec-Fetch-User': '?1',
+                'Host': '47.99.158.118',
+                'Proxy-Connection': 'keep-alive',
                 'Upgrade-Insecure-Requests': '1',
                 'User-Agent': COMMON_USER_AGENT,
             },
             timeout: 10000 // 设置超时时间
         }
 
-        axios.get(videoUrl, config).then(resp => {
-            const url = resp.data.data?.url;
-            if (url && (url.endsWith(".jpg") || url.endsWith(".png"))) {
-                if (isOversea) {
-                    // 海外直接下载
-                    e.reply(segment.image(url));
-                } else {
-                    // 非海外使用🪜下载
-                    const proxy = this.proxyAddr;
-                    const port = this.proxyPort;
-                    const localPath = this.getCurDownloadPath(e);
-                    downloadImg(url, localPath, "", isOversea, {}, {
-                        proxyAddr: proxy,
-                        proxyPort: port
-                    }).then(_ => {
-                        e.reply(segment.image(fs.readFileSync(localPath + "/" + url.split("/").pop())));
-                    });
-                }
+        let resp = await axios.get(videoUrl, config);
+        if (resp.data.data == null) {
+            videoUrl += '/photo/1';
+            logger.info(videoUrl);
+            resp = await axios.get(videoUrl, config);
+        }
+        const url = resp.data.data?.url;
+        if (url && (url.endsWith(".jpg") || url.endsWith(".png"))) {
+            if (isOversea) {
+                // 海外直接下载
+                e.reply(segment.image(url));
             } else {
-                this.downloadVideo(url, !isOversea).then(path => {
-                    e.reply(segment.video(path + "/temp.mp4"));
-                });
+                // 非海外使用🪜下载
+                const localPath = this.getCurDownloadPath(e);
+                const xImgPath = await downloadImg({
+                    img: url,
+                    dir: localPath,
+                    isProxy: !isOversea,
+                    proxyInfo: {
+                        proxyAddr: this.proxyAddr,
+                        proxyPort: this.proxyPort
+                    },
+                    downloadMethod: this.biliDownloadMethod,
+                })
+                e.reply(segment.image(xImgPath));
             }
-        });
+        } else {
+            this.downloadVideo(url, !isOversea).then(path => {
+                e.reply(segment.video(path + "/temp.mp4"));
+            });
+        }
         return true;
     }
 
     // acfun解析
     async acfun(e) {
-        const path = `${this.getCurDownloadPath(e)}/temp/`;
+        const path = `${ this.getCurDownloadPath(e) }/temp/`;
         await mkdirIfNotExists(path);
 
         let inputMsg = e.msg;
         // 适配手机分享：https://m.acfun.cn/v/?ac=32838812&sid=d2b0991bd6ad9c09
         if (inputMsg.includes("m.acfun.cn")) {
-            inputMsg = `https://www.acfun.cn/v/ac${/ac=([^&?]*)/.exec(inputMsg)[1]}`;
+            inputMsg = `https://www.acfun.cn/v/ac${ /ac=([^&?]*)/.exec(inputMsg)[1] }`;
         }
 
         parseUrl(inputMsg).then(res => {
-            e.reply(`识别：猴山，${res.videoName}`);
+            e.reply(`${ this.identifyPrefix } 识别：猴山，${ res.videoName }`);
             parseM3u8(res.urlM3u8s[res.urlM3u8s.length - 1]).then(res2 => {
                 downloadM3u8Videos(res2.m3u8FullUrls, path).then(_ => {
-                    mergeAcFileToMp4(res2.tsNames, path, `${path}out.mp4`).then(_ => {
-                        this.sendVideoToUpload(e, `${path}out.mp4`)
+                    mergeAcFileToMp4(res2.tsNames, path, `${ path }out.mp4`).then(_ => {
+                        this.sendVideoToUpload(e, `${ path }out.mp4`)
                     });
                 });
             });
@@ -962,6 +1052,9 @@ export class tools extends plugin {
             || /(http:|https:)\/\/www\.xiaohongshu\.com\/explore\/(\w+)/.exec(
                 e.msg,
             )?.[0]
+            || /(http:|https:)\/\/www\.xiaohongshu\.com\/discovery\/item\/(\w+)/.exec(
+                e.msg,
+            )?.[0]
         // 注入ck
         XHS_NO_WATERMARK_HEADER.cookie = this.xiaohongshuCookie;
         // 解析短号
@@ -980,14 +1073,14 @@ export class tools extends plugin {
         } else {
             id = /explore\/(\w+)/.exec(msgUrl)?.[1] || /discovery\/item\/(\w+)/.exec(msgUrl)?.[1];
         }
-        const downloadPath = `${this.getCurDownloadPath(e)}`;
+        const downloadPath = `${ this.getCurDownloadPath(e) }`;
         // 检测没有 cookie 则退出
         if (_.isEmpty(this.xiaohongshuCookie)) {
-            e.reply(`2024-8-2后反馈必须使用ck，不然无法解析请填写相关ck\n文档：${HELP_DOC}`);
+            e.reply(`2024-8-2后反馈必须使用ck，不然无法解析请填写相关ck\n${ HELP_DOC }`);
             return;
         }
         // 获取信息
-        fetch(`${XHS_REQ_LINK}${id}`, {
+        fetch(`${ XHS_REQ_LINK }${ id }`, {
             headers: XHS_NO_WATERMARK_HEADER,
         }).then(async resp => {
             const xhsHtml = await resp.text();
@@ -995,49 +1088,55 @@ export class tools extends plugin {
             const res = xhsHtml.match(reg)[1].replace(/undefined/g, "null");
             const resJson = JSON.parse(res);
             const noteData = resJson.note.noteDetailMap[id].note;
-            const {title, desc, type} = noteData;
-            let imgPromise = [];
+            const { title, desc, type } = noteData;
             if (type === "video") {
                 // 封面
                 const cover = noteData.imageList?.[0].urlDefault;
-                e.reply([segment.image(cover), `识别：小红书, ${title}\n${desc}`]);
+                e.reply([segment.image(cover), `${ this.identifyPrefix } 识别：小红书, ${ title }\n${ desc }`]);
                 // ⚠️ （暂时废弃）构造xhs视频链接（有水印）
-                // const xhsVideoUrl = noteData.video.media.stream.h264?.[0]?.masterUrl;
+                const xhsVideoUrl = noteData.video.media.stream.h264?.[0]?.masterUrl;
 
                 // 构造无水印
-                const xhsVideoUrl = `http://sns-video-bd.xhscdn.com/${noteData.video.consumer.originVideoKey}`
+                // const xhsVideoUrl = `http://sns-video-bd.xhscdn.com/${ noteData.video.consumer.originVideoKey }`
                 // 下载视频
                 this.downloadVideo(xhsVideoUrl).then(path => {
                     if (path === undefined) {
                         // 创建文件，如果不存在
-                        path = `${this.getCurDownloadPath(e)}/`;
+                        path = `${ this.getCurDownloadPath(e) }/`;
                     }
-                    this.sendVideoToUpload(e, `${path}/temp.mp4`)
+                    this.sendVideoToUpload(e, `${ path }/temp.mp4`)
                 });
                 return true;
             } else if (type === "normal") {
-                e.reply(`识别：小红书, ${title}\n${desc}`);
-                noteData.imageList.map(async (item, index) => {
-                    imgPromise.push(downloadImg(item.urlDefault, downloadPath, index.toString()));
-                });
-            }
-            const paths = await Promise.all(imgPromise);
-            const imagesData = await Promise.all(
-                paths.map(async item => {
-                    const fileContent = await fs.promises.readFile(item);
+                e.reply(`${ this.identifyPrefix } 识别：小红书, ${ title }\n${ desc }`);
+                const imagePromises = [];
+                // 使用 for..of 循环处理异步下载操作
+                for (let [index, item] of noteData.imageList.entries()) {
+                    imagePromises.push(downloadImg({
+                        img: item.urlDefault,
+                        dir: downloadPath,
+                        fileName: `${ index }.png`,
+                        downloadMethod: this.biliDownloadMethod,
+                    }));
+                }
+                // 等待所有图片下载完成
+                const paths = await Promise.all(imagePromises);
+
+                // 直接构造 imagesData 数组
+                const imagesData = await Promise.all(paths.map(async (item) => {
                     return {
-                        message: segment.image(fileContent),
+                        message: segment.image(await fs.promises.readFile(item)),
                         nickname: e.sender.card || e.user_id,
                         user_id: e.user_id,
                     };
-                }),
-            );
+                }));
 
-            // Reply with forward message
-            e.reply(await Bot.makeForwardMsg(imagesData));
+                // 回复带有转发消息的图片数据
+                e.reply(await Bot.makeForwardMsg(imagesData));
 
-            // Clean up files
-            await Promise.all(paths.map(item => fs.promises.unlink(item)));
+                // 批量删除下载的文件
+                await Promise.all(paths.map(item => fs.promises.rm(item, { force: true })));
+            }
         });
         return true;
     }
@@ -1049,16 +1148,16 @@ export class tools extends plugin {
         const id =
             /(?=musicId).*?(?=&)/.exec(e.msg.trim())?.[0].replace("musicId=", "") ||
             /(?=mvId).*?(?=&)/.exec(e.msg.trim())?.[0].replace("mvId=", "");
-        const {name, album, artist, albumPic120, categorys} = await getBodianMusicInfo(id);
+        const { name, album, artist, albumPic120, categorys } = await getBodianMusicInfo(id);
         e.reply([
-            `识别：波点音乐，${name}-${album}-${artist}\n标签：${categorys
+            `${ this.identifyPrefix } 识别：波点音乐，${ name }-${ album }-${ artist }\n标签：${ categorys
                 .map(item => item.name)
-                .join(" | ")}`,
+                .join(" | ") }`,
             segment.image(albumPic120),
         ]);
         if (e.msg.includes("musicId")) {
-            const path = `${this.getCurDownloadPath(e)}`;
-            await getBodianAudio(id, path, `${name}-${artist}`).then(sendPath => {
+            const path = `${ this.getCurDownloadPath(e) }`;
+            await getBodianAudio(id, path, `${ name }-${ artist }`).then(sendPath => {
                 // 发送语音
                 e.reply(segment.record(sendPath));
                 // 上传群文件
@@ -1069,7 +1168,7 @@ export class tools extends plugin {
         } else if (e.msg.includes("mvId")) {
             await getBodianMv(id).then(res => {
                 // 下载 && 发送
-                const {coverUrl, highUrl, lowUrl, shortLowUrl} = res;
+                const { coverUrl, highUrl, lowUrl, shortLowUrl } = res;
                 this.downloadVideo(lowUrl).then(path => {
                     e.reply(segment.video(path + "/temp.mp4"));
                 });
@@ -1125,12 +1224,12 @@ export class tools extends plugin {
                     }
                 })
             ]);
-            const {name: mvName, artistName: mvArtist, cover: mvCover} = mvDetailData.data?.data;
-            e.reply([segment.image(mvCover), `识别：网易云MV，${mvName} - ${mvArtist}`]);
+            const { name: mvName, artistName: mvArtist, cover: mvCover } = mvDetailData.data?.data;
+            e.reply([segment.image(mvCover), `${ this.identifyPrefix } 识别：网易云MV，${ mvName } - ${ mvArtist }`]);
             // logger.info(mvUrlData.data)
-            const {url: mvUrl} = mvUrlData.data?.data;
+            const { url: mvUrl } = mvUrlData.data?.data;
             this.downloadVideo(mvUrl).then(path => {
-                this.sendVideoToUpload(e, `${path}/temp.mp4`)
+                this.sendVideoToUpload(e, `${ path }/temp.mp4`)
             });
             return;
         }
@@ -1149,14 +1248,14 @@ export class tools extends plugin {
             // 获取歌曲信息
             let title = await axios.get(AUTO_NETEASE_SONG_DETAIL.replace("{}", id)).then(res => {
                 const song = res.data.songs[0];
-                return `${song?.name}-${song?.ar?.[0].name}`.replace(/[\/\?<>\\:\*\|".… ]/g, "");
+                return cleanFilename(`${ song?.name }-${ song?.ar?.[0].name }`);
             });
             // 一般这个情况是VIP歌曲 (如果没有url或者是国内, 国内全走临时接口，后续如果不要删除逻辑'!isOversea ||')
             if (!isOversea || url == null) {
                 url = await this.musicTempApi(e, title, "网易云音乐");
             } else {
                 // 不是VIP歌曲，直接识别完就下一步
-                e.reply(`识别：网易云音乐，${title}`);
+                e.reply(`${ this.identifyPrefix } 识别：网易云音乐，${ title }`);
             }
             // 动态判断后缀名
             const extensionPattern = /\.([a-zA-Z0-9]+)$/;
@@ -1170,7 +1269,7 @@ export class tools extends plugin {
                 // 删除文件
                 await checkAndRemoveFile(path);
             }).catch(err => {
-                logger.error(`下载音乐失败，错误信息为: ${err.message}`);
+                logger.error(`下载音乐失败，错误信息为: ${ err.message }`);
             });
         });
         return true;
@@ -1178,7 +1277,12 @@ export class tools extends plugin {
 
     // 临时接口
     async musicTempApi(e, title, musicType) {
-        let musicReqApi = musicType === "QQ音乐" ? QQ_MUSIC_TEMP_API : NETEASE_TEMP_API;
+        let musicReqApi = NETEASE_TEMP_API;
+        if (musicType === "QQ音乐") {
+            musicReqApi = QQ_MUSIC_TEMP_API;
+        } else if (musicType === "汽水音乐") {
+            musicReqApi = QISHUI_MUSIC_TEMP_API;
+        }
         // 临时接口，title经过变换后搜索到的音乐质量提升
         const vipMusicData = await axios.get(musicReqApi.replace("{}", title.replace("-", " ")), {
             headers: {
@@ -1186,27 +1290,28 @@ export class tools extends plugin {
             },
         });
         const messageTitle = title + "\nR插件检测到当前为VIP音乐，正在转换...";
-        // ??后的内容是适配`QQ_MUSIC_TEMP_API`
-        const url = vipMusicData.data.mp3 ?? vipMusicData.data.data.url;
-        const cover = vipMusicData.data.img ?? vipMusicData.data.data.cover;
-        await e.reply([segment.image(cover), `识别：${musicType}，${messageTitle}`]);
+        // ??后的内容是适配`QQ_MUSIC_TEMP_API`、最后是汽水
+        const url = vipMusicData.data?.music_url ?? vipMusicData.data?.data?.music_url ?? vipMusicData.data?.music;
+        const cover = vipMusicData.data?.cover ?? vipMusicData.data?.data?.cover ?? vipMusicData.data?.cover;
+        await e.reply([segment.image(cover), `${ this.identifyPrefix } 识别：${ musicType }，${ messageTitle }`]);
         return url;
     }
 
     // 微博解析
     async weibo(e) {
         let weiboId;
+        const weiboUrl = e.msg === undefined ? e.message.shift().data.replaceAll("\\", "") : e.msg.trim().replaceAll("\\", "");
         // 对已知情况进行判断
-        if (e.msg.includes("m.weibo.cn")) {
+        if (weiboUrl.includes("m.weibo.cn")) {
             // https://m.weibo.cn/detail/4976424138313924
-            weiboId = /(?<=detail\/)[A-Za-z\d]+/.exec(e.msg)?.[0] || /(?<=m.weibo.cn\/)[A-Za-z\d]+\/[A-Za-z\d]+/.exec(e.msg)?.[0];
-        } else if (e.msg.includes("weibo.com\/tv\/show") && e.msg.includes("mid=")) {
+            weiboId = /(?<=detail\/)[A-Za-z\d]+/.exec(weiboUrl)?.[0] || /(?<=m.weibo.cn\/)[A-Za-z\d]+\/[A-Za-z\d]+/.exec(weiboUrl)?.[0];
+        } else if (weiboUrl.includes("weibo.com\/tv\/show") && weiboUrl.includes("mid=")) {
             // https://weibo.com/tv/show/1034:5007449447661594?mid=5007452630158934
-            weiboId = /(?<=mid=)[A-Za-z\d]+/.exec(e.msg)?.[0];
+            weiboId = /(?<=mid=)[A-Za-z\d]+/.exec(weiboUrl)?.[0];
             weiboId = mid2id(weiboId);
-        } else if (e.msg.includes("weibo.com")) {
+        } else if (weiboUrl.includes("weibo.com")) {
             // https://weibo.com/1707895270/5006106478773472
-            weiboId = /(?<=weibo.com\/)[A-Za-z\d]+\/[A-Za-z\d]+/.exec(e.msg)?.[0];
+            weiboId = /(?<=weibo.com\/)[A-Za-z\d]+\/[A-Za-z\d]+/.exec(weiboUrl)?.[0];
         }
         // 无法获取id就结束
         if (!weiboId) {
@@ -1214,44 +1319,49 @@ export class tools extends plugin {
             return;
         }
         const id = weiboId.split("/")[1] || weiboId;
-        const that = this;
+
         axios.get(WEIBO_SINGLE_INFO.replace("{}", id), {
             headers: {
                 "User-Agent": COMMON_USER_AGENT,
                 "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9",
                 "cookie": "_T_WM=40835919903; WEIBOCN_FROM=1110006030; MLOGIN=0; XSRF-TOKEN=4399c8",
+                "Referer": `https://m.weibo.cn/detail/${ id }`,
             }
         })
             .then(async resp => {
                 const wbData = resp.data.data;
-                const {text, status_title, source, region_name, pics, page_info} = wbData;
-                e.reply(`识别：微博，${text.replace(/<[^>]+>/g, '')}\n${status_title}\n${source}\t${region_name}`);
+                const { text, status_title, source, region_name, pics, page_info } = wbData;
+                e.reply(`${ this.identifyPrefix } 识别：微博，${ text.replace(/<[^>]+>/g, '') }\n${ status_title }\n${ source }\t${ region_name ?? '' }`);
                 if (pics) {
-                    const removePath = [];
-                    // 图片
+                    // 下载图片并格式化消息
                     const imagesPromise = pics.map(item => {
-                        // 下载
-                        return downloadImg(item?.large.url || item.url, this.getCurDownloadPath(e), "", false, {
-                            "Referer": "http://blog.sina.com.cn/",
-                        });
-                    })
-                    const images = await Promise.all(imagesPromise).then(paths => {
-                        return paths.map(item => {
-                            // 记录删除的路径
-                            removePath.push(item);
-                            // 格式化发送图片
+                        return downloadImg({
+                            img: item?.large.url || item.url,
+                            dir: this.getCurDownloadPath(e),
+                            headersExt: {
+                                "Referer": "http://blog.sina.com.cn/",
+                            },
+                            downloadMethod: this.biliDownloadMethod,
+                        }).then(async (filePath) => {
+                            // 格式化为消息对象
                             return {
-                                message: segment.image(fs.readFileSync(item)),
+                                message: segment.image(await fs.promises.readFile(filePath)),
                                 nickname: e.sender.card || e.user_id,
                                 user_id: e.user_id,
-                            }
-                        })
-                    })
+                                // 返回路径以便后续删除
+                                filePath
+                            };
+                        });
+                    });
+
+                    // 等待所有图片处理完
+                    const images = await Promise.all(imagesPromise);
+
+                    // 回复合并的消息
                     await e.reply(await Bot.makeForwardMsg(images));
-                    // 发送完就删除
-                    removePath.forEach(async item => {
-                        checkAndRemoveFile(item);
-                    })
+
+                    // 并行删除文件
+                    await Promise.all(images.map(({ filePath }) => checkAndRemoveFile(filePath)));
                 }
                 if (page_info) {
                     // 视频
@@ -1259,12 +1369,13 @@ export class tools extends plugin {
                     // 文章
                     if (!videoUrl) return true
                     try {
+                        // wb 视频只能强制使用 1，由群友@非酋提出
                         this.downloadVideo(videoUrl, false, {
                             "User-Agent": COMMON_USER_AGENT,
                             "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9",
                             "referer": "https://weibo.com/",
-                        }).then(path => {
-                            this.sendVideoToUpload(e, `${path}/temp.mp4`)
+                        }, 1).then(path => {
+                            this.sendVideoToUpload(e, `${ path }/temp.mp4`)
                         });
                     } catch (err) {
                         e.reply("视频资源获取失败");
@@ -1283,7 +1394,7 @@ export class tools extends plugin {
     async general(e) {
         try {
             const adapter = await GeneralLinkAdapter.create(e.msg);
-            e.reply(`识别：${adapter.name}${adapter.desc ? `, ${adapter.desc}` : ''}`);
+            e.reply(`${ this.identifyPrefix } 识别：${ adapter.name }${ adapter.desc ? `, ${ adapter.desc }` : '' }`);
             logger.mark(adapter);
             if (adapter.images && adapter.images.length > 0) {
                 const images = adapter.images.map(item => {
@@ -1298,7 +1409,8 @@ export class tools extends plugin {
                 // 视频：https://www.kuaishou.com/short-video/3xhjgcmir24m4nm
                 const url = adapter.video;
                 this.downloadVideo(url).then(path => {
-                    this.sendVideoToUpload(e, `${path}/temp.mp4`)
+                    logger.info(path);
+                    this.sendVideoToUpload(e, `${ path }/temp.mp4`)
                 });
             } else {
                 e.reply("解析失败：无法获取到资源");
@@ -1310,31 +1422,8 @@ export class tools extends plugin {
         return true
     }
 
-    /**
-     * yt-dlp工具类
-     * @returns {Promise<void>}
-     * @param path      下载路径
-     * @param url       下载链接
-     * @param isOversea 是否是海外用户
-     */
-    async dy2b(path, url, isOversea) {
-        return new Promise((resolve, reject) => {
-            const command = `yt-dlp ${isOversea ? "" : `--proxy ${this.myProxy}`} -P ${path} -o "temp.%(ext)s" -f 'best[height<=720][ext=mp4]' --merge-output-format "mp4"  ${url}`;
-            exec(command, (error, stdout) => {
-                if (error) {
-                    console.error(`Error executing command: ${error}`);
-                    reject(error);
-                } else {
-                    console.log(`Command output: ${stdout}`);
-                    resolve(stdout);
-                }
-            });
-        });
-    }
-
     // 油管解析
     async sy2b(e) {
-        let videoSizeLimit = 30
         const isOversea = await this.isOverseasServer();
         if (!isOversea && !(await testProxy(this.proxyAddr, this.proxyPort))) {
             e.reply("检测到没有梯子，无法解析油管");
@@ -1343,7 +1432,12 @@ export class tools extends plugin {
         try {
             const urlRex = /(?:https?:\/\/)?(www\.|music\.)?youtube\.com\/[A-Za-z\d._?%&+\-=\/#]*/g;
             const url2Rex = /(?:https?:\/\/)?youtu\.be\/[A-Za-z\d._?%&+\-=\/#]*/g;
-            let url = urlRex.exec(e.msg)?.[0] || url2Rex.exec(e.msg)?.[0];
+             // 检测操作系统平台
+            const isWindows = process.platform === 'win32';
+
+            // 匹配并转义 URL 中的 & 符号（仅对 Windows 进行转义）
+            let url = urlRex.exec(e.msg)?.[0]?.replace(/&/g, isWindows ? '^&' : '&') ||
+                url2Rex.exec(e.msg)?.[0]?.replace(/&/g, isWindows ? '^&' : '&');
             // 适配 YouTube Music
             if (url.includes("music")) {
                 // https://music.youtube.com/watch?v=F4sRtMoIgUs&si=7ZYrHjlI3fHAha0F
@@ -1351,10 +1445,10 @@ export class tools extends plugin {
             }
             const path = this.getCurDownloadPath(e);
             await checkAndRemoveFile(path + "/temp.mp4")
-            const title = execSync(`yt-dlp --get-title ${url} ${isOversea ? "" : `--proxy ${this.myProxy}`}`)
-            e.reply(`识别：油管，视频下载中请耐心等待 \n${title}`);
-            await this.dy2b(path, url, isOversea);
-            this.sendVideoToUpload(e, `${path}/temp.mp4`, videoSizeLimit)
+            const title = await ytDlpGetTilt(url, isOversea, this.myProxy);
+            e.reply(`${ this.identifyPrefix } 识别：油管，视频下载中请耐心等待 \n${ title }`);
+            await ytDlpHelper(path, url, isOversea, this.myProxy, true);
+            this.sendVideoToUpload(e, `${ path }/temp.mp4`);
         } catch (error) {
             console.error(error);
             throw error; // Rethrow the error so it can be handled by the caller
@@ -1392,7 +1486,7 @@ export class tools extends plugin {
             // return;
             const data = respJson.data.post.post;
             // 分别获取：封面、主题、内容、图片
-            const {cover, subject, content, images} = data;
+            const { cover, subject, content, images } = data;
             let realContent = "";
             // safe JSON.parse
             try {
@@ -1400,7 +1494,7 @@ export class tools extends plugin {
             } catch (e) {
                 realContent = content;
             }
-            const normalMsg = `识别：米游社，${subject}\n${realContent?.describe || ""}`;
+            const normalMsg = `${ this.identifyPrefix } 识别：米游社，${ subject }\n${ realContent?.describe || "" }`;
             const replyMsg = cover ? [segment.image(cover), normalMsg] : normalMsg;
             e.reply(replyMsg);
             // 图片
@@ -1424,7 +1518,7 @@ export class tools extends plugin {
                         // 暂时选取分辨率较低的video进行解析
                         const videoUrl = resolutions[i].url;
                         this.downloadVideo(videoUrl).then(path => {
-                            this.sendVideoToUpload(e, `${path}/temp.mp4`)
+                            this.sendVideoToUpload(e, `${ path }/temp.mp4`)
                         });
                         break;
                     }
@@ -1435,15 +1529,17 @@ export class tools extends plugin {
 
     // 微视
     async weishi(e) {
-        // 拦截恶意链接 【后续如果有小程序检测可以删除这个逻辑】
-        if (!e.msg.includes('https://isee.weishi.qq.com/ws/app-pages/share/index.html')) {
-            e.reply("识别：微视，但无法完整检测到视频ID");
-            // 打个日志 方便后面出bug知道位置
-            logger.error("[R插件][微视] 无法检测链接")
-            return true;
-        }
+        let url = e.msg;
+        const urlRegex = /https?:\/\/video\.weishi\.qq\.com\/\S+/g;
+        // 执行匹配
+        url = url.match(urlRegex)[0];
+        // 消除短链接
+        await fetch(url, {
+            method: "HEAD"
+        }).then(resp => {
+            url = resp.url;
+        });
 
-        const url = e.msg;
         try {
             const idMatch = url.match(/id=(.*)&spid/);
             if (!idMatch || idMatch.length !== 2) {
@@ -1467,10 +1563,10 @@ export class tools extends plugin {
             const cover = firstFeed.images[0].url;
             const noWatermarkDownloadUrl = firstFeed.video_url;
 
-            e.reply([segment.image(cover), `识别：微视，${title}`]);
+            e.reply([segment.image(cover), `${ this.identifyPrefix } 识别：微视，${ title }`]);
 
             this.downloadVideo(noWatermarkDownloadUrl).then(path => {
-                this.sendVideoToUpload(e, `${path}/temp.mp4`)
+                this.sendVideoToUpload(e, `${ path }/temp.mp4`)
             });
         } catch (err) {
             logger.error(err);
@@ -1504,12 +1600,11 @@ export class tools extends plugin {
             const imgSrcRegex = /<img [^>]*src="([^"]*)"[^>]*\/>/gi;
             let match;
             const imgSrcs = [];
-
             while ((match = imgSrcRegex.exec(html)) !== null) {
                 imgSrcs.push(match[1]); // Adds the content of the src attribute to the array
             }
 
-            const images = imgSrcs.filter(item => item.startsWith("http://bd-tbfile.izuiyou.com/img/view/id"))
+            const images = imgSrcs.filter(item => item.includes("\/img\/view\/id"))
 
             // Construct the response object
             const shortVideoInfo = {
@@ -1520,7 +1615,7 @@ export class tools extends plugin {
                 images,
             };
 
-            e.reply([segment.image(shortVideoInfo.cover), `识别：最右，${shortVideoInfo.authorName}\n${shortVideoInfo.title}`])
+            e.reply(`${ this.identifyPrefix } 识别：最右，${ shortVideoInfo.authorName }\n${ shortVideoInfo.title }`)
 
             if (shortVideoInfo.images.length > 0) {
                 const replyImages = shortVideoInfo.images.map(item => {
@@ -1534,7 +1629,7 @@ export class tools extends plugin {
             }
             if (shortVideoInfo.noWatermarkDownloadUrl) {
                 this.downloadVideo(shortVideoInfo.noWatermarkDownloadUrl).then(path => {
-                    this.sendVideoToUpload(e, `${path}/temp.mp4`)
+                    this.sendVideoToUpload(e, `${ path }/temp.mp4`)
                 });
             }
         } catch (error) {
@@ -1550,23 +1645,23 @@ export class tools extends plugin {
         // 匹配名字
         const freyrName = message.includes("spotify") ? "Spotify" : "Apple Music";
         // 找到R插件保存目录
-        const currentWorkingDirectory = path.resolve(this.defaultPath);
+        const currentWorkingDirectory = path.resolve(this.getCurDownloadPath(e));
         // 如果没有文件夹就创建一个
         await mkdirIfNotExists(currentWorkingDirectory + "/am")
         // 检测是否存在框架
-        const isExistFreyr = await checkCommandExists("freyr");
+        const isExistFreyr = await checkToolInCurEnv("freyr");
         if (!isExistFreyr) {
-            e.reply(`检测到没有${freyrName}需要的环境，无法解析！${HELP_DOC}`);
+            e.reply(`检测到没有${ freyrName }需要的环境，无法解析！${ HELP_DOC }`);
             return;
         }
         // 执行命令
-        const result = await execSync(`freyr -d ${currentWorkingDirectory + "/am/"} get ${message}`);
+        const result = await execSync(`freyr -d ${ currentWorkingDirectory + "/am/" } get ${ message }`);
         logger.info(result.toString());
         // 获取信息
-        let {title, album, artist} = await this.parseFreyrLog(result.toString());
+        let { title, album, artist } = await this.parseFreyrLog(result.toString());
         // 兜底策略
         if (freyrName === "Apple Music" && (title === "N/A" || album === "N/A" || artist === "N/A")) {
-            const data = await axios.get(`https://api.fabdl.com/apple-music/get?url=${message}`, {
+            const data = await axios.get(`https://api.fabdl.com/apple-music/get?url=${ message }`, {
                 headers: {
                     "User-Agent": COMMON_USER_AGENT,
                     "Referer": "https://apple-music-downloader.com/",
@@ -1574,16 +1669,16 @@ export class tools extends plugin {
                     "Accept": "application/json, text/plain, */*",
                 },
             })
-            const {name, artists} = data.data.result;
+            const { name, artists } = data.data.result;
             title = name;
             artist = artists;
         }
         // 判断是否是海外服务器
         const isOversea = await this.isOverseasServer();
         // 国内服务器解决方案
-        if (!isOversea && !(await testProxy(this.proxyAddr, this.proxyPort))) {
+        if (!isOversea) {
             // 临时接口
-            const url = await this.musicTempApi(e, `${title} ${artist}`, freyrName);
+            const url = await this.musicTempApi(e, `${ title } ${ artist }`, freyrName);
             // 下载音乐
             downloadAudio(url, this.getCurDownloadPath(e), title, 'follow').then(async path => {
                 // 发送语音
@@ -1592,41 +1687,22 @@ export class tools extends plugin {
                 await this.uploadGroupFile(e, path);
                 await checkAndRemoveFile(path);
             }).catch(err => {
-                logger.error(`下载音乐失败，错误信息为: ${err.message}`);
-            });
-            return true;
-        }
-        e.reply(`识别：${freyrName}，${title}--${artist}`);
-        // 检查目录是否存在
-        const musicPath = currentWorkingDirectory + "/am/" + artist + "/" + album;
-        const that = this;
-        // 找到音频文件
-        if (fs.existsSync(musicPath)) {
-            logger.info('目录存在。正在获取.m4a文件...');
-
-            // 读取目录中的所有文件和文件夹
-            fs.readdir(musicPath, (err, files) => {
-                if (err) {
-                    e.reply(`${freyrName}解析出错，请查看日志！`)
-                    logger.error('读取目录时出错:', err);
-                    return;
-                }
-
-                // 过滤出以.m4a结尾的文件
-                const m4aFiles = files.filter(file => path.extname(file).toLowerCase() === '.m4a');
-
-                // 打印出所有.m4a文件
-                logger.info('找到以下.m4a文件:');
-                m4aFiles.forEach(file => {
-                    that.uploadGroupFile(e, path.join(musicPath, file));
-                });
+                logger.error(`下载音乐失败，错误信息为: ${ err.message }`);
             });
         } else {
-            e.reply(`下载失败！没有找到${freyrName}下载下来文件！`);
+            // freyr 逻辑
+            e.reply(`${ this.identifyPrefix } 识别：${ freyrName }，${ title }--${ artist }`);
+            // 检查目录是否存在
+            const musicPath = currentWorkingDirectory + "/am/" + artist + "/" + album;
+            // 找到音频文件
+            const mediaFiles = await getMediaFilesAndOthers(musicPath);
+            for (let other of mediaFiles.others) {
+                await this.uploadGroupFile(e, `${ musicPath }/${ other }`);
+            }
         }
         // 计数
         tools.#amCount += 1;
-        logger.info(`当前${freyrName}已经下载了：${tools.#amCount}次`);
+        logger.info(`当前${ freyrName }已经下载了：${ tools.#amCount }次`);
         // 定时清理
         if (tools.#amCount >= 5) {
             await deleteFolderRecursive(currentWorkingDirectory + "/am");
@@ -1651,71 +1727,57 @@ export class tools extends plugin {
         const album = albumMatch ? albumMatch[1] : 'N/A';
         const artist = artistMatch ? artistMatch[1] : 'N/A';
 
-        return {title, album, artist};
+        return { title, album, artist };
     }
 
     // 链接总结
     async linkShareSummary(e) {
+        let name, summaryLink;
+
+        if (e.msg.startsWith("#总结一下")) {
+            name = "网页总结";
+            summaryLink = e.msg.replace("#总结一下", ""); // 如果需要进一步处理 summaryLink，可以在这里添加相关逻辑
+        } else {
+            ({ name: name, summaryLink: summaryLink } = contentEstimator(e.msg));
+        }
+
         // 判断是否有总结的条件
         if (_.isEmpty(this.aiApiKey) || _.isEmpty(this.aiApiKey)) {
-            e.reply(`没有配置 Kimi，无法为您总结！${HELP_DOC}`)
+            // e.reply(`没有配置 Kimi，无法为您总结！${ HELP_DOC }`)
+            await this.tempSummary(name, summaryLink, e);
             return true;
         }
-        const {name, summaryLink} = contentEstimator(e.msg);
         const builder = await new OpenaiBuilder()
             .setBaseURL(this.aiBaseURL)
             .setApiKey(this.aiApiKey)
             .setModel(this.aiModel)
             .setPrompt(SUMMARY_PROMPT)
             .build();
-        e.reply(`识别：${name}，正在为您总结，请稍等...`, true, {recallMsg: 60});
-        const {ans: kimiAns, model} = await builder.kimi(summaryLink);
+        e.reply(`${ this.identifyPrefix } 识别：${ name }，正在为您总结，请稍等...`, true, { recallMsg: MESSAGE_RECALL_TIME });
+        const { ans: kimiAns, model } = await builder.kimi(summaryLink);
         // 计算阅读时间
         const stats = estimateReadingTime(kimiAns);
-        e.reply(`当前 ${name} 预计阅读时间: ${stats.minutes} 分钟，总字数: ${stats.words}`)
-        const Msg = await this.makeForwardMsg(e, [`「R插件 x ${model}」联合为您总结内容：`, kimiAns]);
+        const titleMatch = kimiAns.match(/(Title|标题)([:：])\s*(.*?)\n/)?.[3];
+        e.reply(`《${ titleMatch }》 预计阅读时间: ${ stats.minutes } 分钟，总字数: ${ stats.words }`)
+        const Msg = await Bot.makeForwardMsg(textArrayToMakeForward(e, [`「R插件 x ${ model }」联合为您总结内容：`, kimiAns]));
         await e.reply(Msg);
         return true;
     }
 
-    // 图片翻译和总结
-    async pictureTranslate(e) {
-        // 判断是否有总结的条件
-        if (_.isEmpty(this.aiApiKey) || _.isEmpty(this.aiApiKey)) {
-            e.reply(`没有配置 Kimi，无法为您总结！${HELP_DOC}`)
-            return true;
-        }
-        // logger.info(Bot.pickGroup(e.group_id, true))
-        const curGroup = Bot.pickGroup(e.group_id, true);
-        const curGroupMessages = await curGroup.getChatHistory(e.message_seq, 1);
-        const groupMessage = curGroupMessages.pop()?.message;
-        // logger.info(groupMessage)
-        let refImgUrl;
-        for (let itemMessage of groupMessage) {
-            if (itemMessage.type === 'reply') {
-                const imgMessage = await curGroup.getMsg(itemMessage.id);
-                // logger.info(imgMessage)
-                refImgUrl = imgMessage.message.pop()?.url;
-                break;
-            }
-        }
-        if (refImgUrl === undefined || refImgUrl == null) {
-            e.reply("无法检测到图片，请重试！");
-            return
-        }
-        const builder = await new OpenaiBuilder()
-            .setBaseURL(this.aiBaseURL)
-            .setApiKey(this.aiApiKey)
-            .setModel(this.aiModel)
-            .setPrompt(IMAGE_TRANSLATION_PROMPT)
-            .build();
-        e.reply(`识别：图片翻译，请稍等...`, true, {recallMsg: 60});
-        const refImgDownloadPath = this.getCurDownloadPath(e);
-        await downloadImg(refImgUrl, refImgDownloadPath, "demo.png");
-        const {ans: kimiAns, model} = await builder.openai_pic(`${refImgDownloadPath}/demo.png`);
-        const Msg = await this.makeForwardMsg(e, [`「R插件 x ${model}」联合为您识别内容：`, kimiAns]);
+    /**
+     * 临时AI接口
+     * @param name
+     * @param summaryLink
+     * @param e
+     * @returns {Promise<void>}
+     */
+    async tempSummary(name, summaryLink, e) {
+        const content = await llmRead(summaryLink);
+        const titleMatch = content.match(/Title:\s*(.*?)\n/)?.[1];
+        e.reply(`${ this.identifyPrefix } 识别：${ name } - ${ titleMatch }，正在为您总结，请稍等...`, true);
+        const summary = await deepSeekChat(content, SUMMARY_PROMPT);
+        const Msg = await Bot.makeForwardMsg(textArrayToMakeForward(e, [`「R插件 x DeepSeek」联合为您总结内容：`, summary]));
         await e.reply(Msg);
-        return true;
     }
 
     // q q m u s i c 解析
@@ -1736,7 +1798,7 @@ export class tools extends plugin {
             musicInfo = prompt + "-" + desc;
             // 空判定
             if (musicInfo.trim() === "-" || prompt === undefined || desc === undefined) {
-                logger.info(`没有识别到QQ音乐小程序，帮助文档如下：${HELP_DOC}`)
+                logger.info(`没有识别到QQ音乐小程序，帮助文档如下：${ HELP_DOC }`)
                 return true;
             }
         } else {
@@ -1746,7 +1808,7 @@ export class tools extends plugin {
         }
         // 删除特殊字符
         musicInfo = cleanFilename(musicInfo);
-        logger.info(`[R插件][qqMusic] 识别音乐为：${musicInfo}`);
+        logger.info(`[R插件][qqMusic] 识别音乐为：${ musicInfo }`);
         // 使用临时接口下载
         const url = await this.musicTempApi(e, musicInfo, "QQ音乐");
         // 下载音乐
@@ -1757,7 +1819,7 @@ export class tools extends plugin {
             await this.uploadGroupFile(e, path);
             await checkAndRemoveFile(path);
         }).catch(err => {
-            logger.error(`下载音乐失败，错误信息为: ${err.message}`);
+            logger.error(`下载音乐失败，错误信息为: ${ err.message }`);
         });
         return true;
     }
@@ -1766,7 +1828,7 @@ export class tools extends plugin {
     async qishuiMusic(e) {
         const normalRegex = /^(.*?)\s*https?:\/\//;
         const musicInfo = normalRegex.exec(e.msg)?.[1].trim().replace("@汽水音乐", "");
-        logger.info(`[R插件][qishuiMusic] 识别音乐为：${musicInfo}`);
+        logger.info(`[R插件][qishuiMusic] 识别音乐为：${ musicInfo }`);
         // 使用临时接口下载
         const url = await this.musicTempApi(e, musicInfo, "汽水音乐");
         // 下载音乐
@@ -1777,9 +1839,175 @@ export class tools extends plugin {
             await this.uploadGroupFile(e, path);
             await checkAndRemoveFile(path);
         }).catch(err => {
-            logger.error(`下载音乐失败，错误信息为: ${err.message}`);
+            logger.error(`下载音乐失败，错误信息为: ${ err.message }`);
         });
         return true;
+    }
+
+    // 小飞机下载
+    async aircraft(e) {
+        if (!(await this.isTrustUser(e.user_id))) {
+            e.reply("你没有权限使用此命令");
+            return;
+        }
+        const isOversea = await this.isOverseasServer();
+        if (!isOversea && !(await testProxy(this.proxyAddr, this.proxyPort))) {
+            e.reply("检测到没有梯子，无法解析小飞机");
+            return false;
+        }
+        const urlRex = /(?:https?:\/\/)?t\.me\/[A-Za-z\d._?%&+\-=\/#]*/g;
+        // 检查当前环境
+        const isExistTdl = await checkToolInCurEnv("tdl");
+        if (!isExistTdl) {
+            e.reply(`未检测到必要的环境，无法解析小飞机${ HELP_DOC }`);
+            return;
+        }
+        const url = urlRex.exec(e.msg)[0];
+        if (e.msg.startsWith("保存")) {
+            // 发送文件到 SaveMessages
+            await saveTDL(url, isOversea, this.myProxy);
+            e.reply("文件已保存到 Save Messages！");
+            return true;
+        }
+        e.reply(`${ this.identifyPrefix } 识别：小飞机（学习版）`);
+        const tgSavePath = `${ this.getCurDownloadPath(e) }/tg`;
+        // 如果没有文件夹则创建
+        await mkdirIfNotExists(tgSavePath);
+        // 删除之前的文件
+        await deleteFolderRecursive(tgSavePath);
+        await startTDL(url, tgSavePath, isOversea, this.myProxy, this.videoDownloadConcurrency);
+        // 过滤当前文件
+        const mediaFiles = await getMediaFilesAndOthers(tgSavePath);
+        if (mediaFiles.images.length > 0) {
+            const imagesData = mediaFiles.images.map(item => {
+                const fileContent = fs.readFileSync(`${ tgSavePath }/${ item }`);
+                return {
+                    message: segment.image(fileContent),
+                    nickname: e.sender.card || e.user_id,
+                    user_id: e.user_id,
+                };
+            })
+            e.reply(await Bot.makeForwardMsg(imagesData), true, { recallMsg: MESSAGE_RECALL_TIME });
+        } else if (mediaFiles.videos.length > 0) {
+            for (const item of mediaFiles.videos) {
+                await this.sendVideoToUpload(e, `${ tgSavePath }/${ item }`);
+            }
+        } else {
+            for (let other of mediaFiles.others) {
+                await this.uploadGroupFile(e, `${ tgSavePath }/${ other }`);
+            }
+        }
+        return true;
+    }
+
+    // 贴吧
+    async tieba(e) {
+        // 提取链接和ID
+        const msg = /https:\/\/tieba\.baidu\.com\/p\/[A-Za-z0-9]+/.exec(e.msg)?.[0];
+        const id = /\/p\/([A-Za-z0-9]+)/.exec(msg)?.[1];
+        // 获取帖子详情
+        const hibi = HIBI_API_SERVICE + `/tieba/post_detail?tid=${ id }`;
+        const hibiResp = await fetch(hibi, {
+            headers: {
+                "User-Agent": COMMON_USER_AGENT,
+            }
+        });
+        const postList = (await hibiResp.json()).post_list;
+        // 获取楼主的消息
+        const top = postList[0];
+        // 提取标题和内容
+        const { title, content } = top;
+        let sendContent = `${ this.identifyPrefix }识别：贴吧，${ title }`
+        let extractImages = [];
+        // 如果内容中有图片、文本或视频，它会将它们添加到 sendContent 消息中
+        if (content && content.length > 0) {
+            sendContent = [sendContent]
+            for (const { cdn_src, text, link } of content) {
+                logger.info({ cdn_src, text, link }); // 可以一次性输出多个属性
+
+                // 处理图片
+                if (cdn_src) extractImages.push(segment.image(cdn_src));
+
+                // 处理文本
+                if (text) sendContent.push(`\n\n📝 简介：${ text }`);
+
+                // 处理视频
+                if (link) {
+                    const filePath = await this.downloadVideo(link);
+                    this.sendVideoToUpload(e, `${ filePath }/temp.mp4`);
+                }
+            }
+        }
+        e.reply(sendContent, true);
+        extractImages && e.reply(Bot.makeForwardMsg(extractImages.map(item => ({
+            message: item,
+            nickname: e.sender.card || e.user_id,
+            user_id: e.user_id,
+        }))));
+        // 切除楼主的消息
+        const others = postList.slice(1);
+        // 贴吧楼层的消息处理：如果响应中有其他帖子，代码创建一条转发消息，包含其他帖子的内容，并回复原始消息
+        const reply = others.flatMap(item => {
+            if (!item.content || item.content.length === 0) return [];
+
+            return item.content.map(floor => {
+                const commonData = {
+                    nickname: e.sender.card || e.user_id,
+                    user_id: e.user_id,
+                };
+
+                if (floor?.cdn_src) {
+                    return {
+                        ...commonData,
+                        message: segment.image(floor.cdn_src)
+                    };
+                } else if (floor?.text) {
+                    return {
+                        ...commonData,
+                        message: { type: 'text', text: floor.text || '-' }
+                    };
+                }
+
+                return null;
+            }).filter(Boolean); // 过滤掉 null 的值
+        });
+
+        e.reply(await Bot.makeForwardMsg(reply));
+        return true;
+    }
+
+    async yc(e) {
+        if (!(await this.isTrustUser(e.user_id))) {
+            e.reply("你没有权限使用此命令");
+            return;
+        }
+
+        const tag = e.msg.replace(/#验车/g, "");
+
+        const reqUrl = `https://whatslink.info/api/v1/link?url=${ tag }`;
+        const resp = await axios.get(reqUrl, {
+            headers: {
+                "User-Agent": COMMON_USER_AGENT,
+            }
+        });
+        if (!resp.data) {
+            e.reply("没有找到相关磁力");
+            return;
+        }
+        await e.reply(`🧲 [R插件 x Mix] 联合为您验车：\n${ resp.data.name }`, false, { recallMsg: MESSAGE_RECALL_TIME });
+        if (resp.data?.screenshots === null) {
+            e.reply("没有找到相关媒体");
+            return;
+        }
+        const screenshots = resp.data.screenshots.map(item => {
+            const screenshot = item.screenshot;
+            return {
+                message: segment.image(screenshot),
+                nickname: this.e.sender.card || this.e.user_id,
+                user_id: this.e.user_id,
+            }
+        });
+        e.reply(Bot.makeForwardMsg(screenshots), false, { recallMsg: MESSAGE_RECALL_TIME });
     }
 
     /**
@@ -1801,6 +2029,8 @@ export class tools extends plugin {
                         }),
                     1000,
                 ),
+                this.biliDownloadMethod,
+                this.videoDownloadConcurrency
             ),
             downloadBFile(
                 audioUrl,
@@ -1812,9 +2042,11 @@ export class tools extends plugin {
                         }),
                     1000,
                 ),
+                this.biliDownloadMethod,
+                this.videoDownloadConcurrency
             ),
         ]).then(data => {
-            return mergeFileToMp4(data[0].fullFileName, data[1].fullFileName, `${title}.mp4`);
+            return mergeFileToMp4(data[0].fullFileName, data[1].fullFileName, `${ title }.mp4`);
         });
     }
 
@@ -1852,7 +2084,7 @@ export class tools extends plugin {
      * @returns {string}
      */
     getCurDownloadPath(e) {
-        return `${this.defaultPath}${e.group_id || e.user_id}`
+        return `${ this.defaultPath }${ e.group_id || e.user_id }`
     }
 
     /**
@@ -1860,9 +2092,9 @@ export class tools extends plugin {
      * @returns {{groupPath: string, target: string}}
      */
     getGroupPathAndTarget() {
-        const groupPath = `${this.defaultPath}${this.e.group_id || this.e.user_id}`;
-        const target = `${groupPath}/temp.mp4`;
-        return {groupPath, target};
+        const groupPath = `${ this.defaultPath }${ this.e.group_id || this.e.user_id }`;
+        const target = `${ groupPath }/temp.mp4`;
+        return { groupPath, target };
     }
 
     /**
@@ -1871,26 +2103,19 @@ export class tools extends plugin {
      * @param isProxy
      * @param headers
      * @param numThreads
-     * @returns {Promise<void>}
+     * @returns {Promise<string>}
      */
-    async downloadVideo(url, isProxy = false, headers = null, numThreads = 1) {
+    async downloadVideo(url, isProxy = false, headers = null, numThreads = this.videoDownloadConcurrency) {
         // 构造群信息参数
-        const {groupPath, target} = this.getGroupPathAndTarget.call(this);
+        const { groupPath, target } = this.getGroupPathAndTarget.call(this);
         await mkdirIfNotExists(groupPath);
         // 构造header部分内容
         const userAgent = "Mozilla/5.0 (Linux; Android 5.0; SM-G900P Build/LRX21T) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/70.0.3538.25 Mobile Safari/537.36";
-        // 用户设置优先策略，逻辑解释：如果使用了这个函数优先查看用户是否设置了大于1的线程，如果设置了优先使用，没设置就开发者设定的函数设置
-        numThreads = this.videoDownloadConcurrency !== 1 ? this.videoDownloadConcurrency : numThreads;
 
         // 构造代理参数
         const proxyOption = {
             ...(isProxy && {
-                httpAgent: tunnel.httpOverHttp({
-                    proxy: {host: this.proxyAddr, port: this.proxyPort},
-                }),
-                httpsAgent: tunnel.httpsOverHttp({
-                    proxy: {host: this.proxyAddr, port: this.proxyPort},
-                }),
+                httpAgent: new HttpsProxyAgent(`http://${ this.proxyAddr }:${ this.proxyPort }`),
             }),
         }
 
@@ -1907,13 +2132,19 @@ export class tools extends plugin {
             target,
             groupPath,
         }
-
-        // 如果是用户设置了单线程，则不分片下载
-        if (numThreads === 1) {
-            return await this.downloadVideoWithSingleThread(downloadVideoParams);
-        } else {
-            return await this.downloadVideoWithMultiThread(downloadVideoParams, numThreads);
-        }
+        logger.info(`[R插件][视频下载]：当前队列长度为 ${ this.queue.size + 1 }`);
+        return await this.queue.add(async () => {
+            // 如果是用户设置了单线程，则不分片下载
+            if (numThreads === 1) {
+                return this.downloadVideoWithSingleThread(downloadVideoParams);
+            } else if (numThreads !== 1 && this.biliDownloadMethod === 1) {
+                return this.downloadVideoWithAria2(downloadVideoParams, numThreads);
+            } else if (numThreads !== 1 && this.biliDownloadMethod === 2) {
+                return this.downloadVideoUseAxel(downloadVideoParams, numThreads);
+            } else {
+                return this.downloadVideoWithMultiThread(downloadVideoParams, numThreads);
+            }
+        });
     }
 
     /**
@@ -1924,11 +2155,11 @@ export class tools extends plugin {
      * @returns {Promise<*>}
      */
     async downloadVideoWithMultiThread(downloadVideoParams, numThreads) {
-        const {url, headers, userAgent, proxyOption, target, groupPath} = downloadVideoParams;
+        const { url, headers, userAgent, proxyOption, target, groupPath } = downloadVideoParams;
         try {
             // Step 1: 请求视频资源获取 Content-Length
             const headRes = await axios.head(url, {
-                headers: headers || {"User-Agent": userAgent},
+                headers: headers || { "User-Agent": userAgent },
                 ...proxyOption
             });
             const contentLength = headRes.headers['content-length'];
@@ -1951,7 +2182,7 @@ export class tools extends plugin {
                 const partAxiosConfig = {
                     headers: {
                         "User-Agent": userAgent,
-                        "Range": `bytes=${start}-${end}`
+                        "Range": `bytes=${ start }-${ end }`
                     },
                     responseType: "stream",
                     ...proxyOption
@@ -1959,12 +2190,12 @@ export class tools extends plugin {
 
                 promises.push(axios.get(url, partAxiosConfig).then(res => {
                     return new Promise((resolve, reject) => {
-                        const partPath = `${target}.part${i}`;
-                        logger.mark(`[R插件][视频下载引擎] 正在下载 part${i}`)
+                        const partPath = `${ target }.part${ i }`;
+                        logger.mark(`[R插件][视频下载引擎] 正在下载 part${ i }`)
                         const writer = fs.createWriteStream(partPath);
                         res.data.pipe(writer);
                         writer.on("finish", () => {
-                            logger.mark(`[R插件][视频下载引擎] part${i + 1} 下载完成`); // 记录线程下载完成
+                            logger.mark(`[R插件][视频下载引擎] part${ i + 1 } 下载完成`); // 记录线程下载完成
                             resolve(partPath);
                         });
                         writer.on("error", reject);
@@ -1977,11 +2208,11 @@ export class tools extends plugin {
 
             // Step 4: 合并下载的文件部分
             await checkAndRemoveFile(target); // 确保目标文件不存在
-            const writer = fs.createWriteStream(target, {flags: 'a'});
+            const writer = fs.createWriteStream(target, { flags: 'a' });
             for (const partPath of parts) {
                 await new Promise((resolve, reject) => {
                     const reader = fs.createReadStream(partPath);
-                    reader.pipe(writer, {end: false});
+                    reader.pipe(writer, { end: false });
                     reader.on('end', () => {
                         fs.unlinkSync(partPath); // 删除部分文件
                         resolve();
@@ -1994,7 +2225,149 @@ export class tools extends plugin {
 
             return groupPath;
         } catch (err) {
-            logger.error(`下载视频发生错误！\ninfo:${err}`);
+            logger.error(`下载视频发生错误！\ninfo:${ err }`);
+        }
+    }
+
+    /**
+     * 使用Aria2进行多线程下载
+     * @param downloadVideoParams
+     * @param numThreads
+     * @returns {Promise<unknown>}
+     */
+    async downloadVideoWithAria2(downloadVideoParams, numThreads) {
+        const { url, headers, userAgent, proxyOption, target, groupPath } = downloadVideoParams;
+
+        // 构造aria2c命令参数
+        const aria2cArgs = [
+            `"${ url }"`,
+            `--out="temp.mp4"`,
+            `--dir="${ groupPath }"`,
+            `--user-agent="${ userAgent }"`,
+            `--max-connection-per-server=${ numThreads }`, // 每个服务器的最大连接数
+            `--split=${ numThreads }`,               // 分成 6 个部分进行下载
+        ];
+
+        // 如果有自定义头信息
+        if (headers) {
+            for (const [key, value] of Object.entries(headers)) {
+                aria2cArgs.push(`--header="${ key }: ${ value }"`);
+            }
+        }
+
+        // 如果使用代理
+        if (proxyOption && proxyOption.httpAgent) {
+            const proxyUrl = proxyOption.httpAgent.proxy.href;
+            aria2cArgs.push(`--all-proxy="${ proxyUrl }"`);
+        }
+
+        try {
+            await checkAndRemoveFile(target);
+            logger.mark(`开始下载: ${ url }`);
+
+            // 执行aria2c命令
+            const command = `aria2c ${ aria2cArgs.join(' ') }`;
+            exec(command, (error, stdout, stderr) => {
+                if (error) {
+                    logger.error(`下载视频发生错误！\ninfo:${ stderr }`);
+                    throw error;
+                } else {
+                    logger.mark(`下载完成: ${ url }`);
+                }
+            });
+
+            // 监听文件生成完成
+            let count = 0;
+            return new Promise((resolve, reject) => {
+                const checkInterval = setInterval(() => {
+                    logger.info(logger.red(`[R插件][Aria2] 没有检测到文件！重试第${ count + 1 }次`));
+                    count += 1;
+                    if (fs.existsSync(target)) {
+                        logger.info("[R插件][Aria2] 检测到文件！");
+                        clearInterval(checkInterval);
+                        resolve(groupPath);
+                    }
+                    if (count === 6) {
+                        logger.error(`[R插件][Aria2] 下载视频发生错误！`);
+                        clearInterval(checkInterval);
+                        reject();
+                    }
+                }, DOWNLOAD_WAIT_DETECT_FILE_TIME);
+            });
+        } catch (err) {
+            logger.error(`下载视频发生错误！\ninfo:${ err }`);
+            throw err;
+        }
+    }
+
+    /**
+     * 使用Axel进行多线程下载
+     * @param downloadVideoParams
+     * @param numThreads
+     * @returns {Promise<unknown>}
+     */
+    async downloadVideoUseAxel(downloadVideoParams, numThreads) {
+        const { url, headers, userAgent, proxyOption, target, groupPath } = downloadVideoParams;
+
+        // 构造axel命令参数
+        const axelArgs = [
+            `-n ${ numThreads }`,
+            `-o "${ target }"`,
+            `-U "${ userAgent }"`,
+            url
+        ];
+
+        // 如果有自定义头信息
+        if (headers) {
+            for (const [key, value] of Object.entries(headers)) {
+                axelArgs.push(`-H "${ key }: ${ value }"`);
+            }
+        }
+
+        // 如果使用代理
+        if (proxyOption && proxyOption.httpAgent) {
+            const proxyUrl = proxyOption.httpAgent.proxy.href;
+            axelArgs.push(`--proxy="${ proxyUrl }"`);
+        }
+
+        try {
+            await checkAndRemoveFile(target);
+            logger.mark(`开始下载: ${ url }`);
+
+
+            // 执行axel命令
+            const command = `axel ${ axelArgs.join(' ') }`;
+            exec(command, (error, stdout, stderr) => {
+                if (error) {
+                    logger.error(`下载视频发生错误！\ninfo:${ stderr }`);
+                    throw error;
+                } else {
+                    logger.mark(`下载完成: ${ url }`);
+                }
+            });
+
+            let count = 0;
+            // 监听文件生成完成
+            return new Promise((resolve, reject) => {
+                const checkInterval = setInterval(() => {
+                    logger.info(logger.red(`[R插件][Aria2] 没有检测到文件！重试第${ count + 1 }次`));
+                    count += 1;
+                    if (fs.existsSync(target)) {
+                        logger.info("[R插件][Axel] 检测到文件！");
+                        clearInterval(checkInterval);
+                        logger.info(`[R插件][Axel] 下载到${ groupPath }`);
+                        resolve(groupPath);
+                    }
+                    if (count === 6) {
+                        logger.error(`[R插件][Axel] 下载视频发生错误！`);
+                        clearInterval(checkInterval);
+                        reject();
+                    }
+                }, DOWNLOAD_WAIT_DETECT_FILE_TIME);
+            });
+        } catch (err) {
+            logger.error(`下载视频发生错误！\ninfo:${ err }`);
+            throw err;
         }
     }
 
@@ -2005,9 +2378,9 @@ export class tools extends plugin {
      * @param downloadVideoParams
      */
     async downloadVideoWithSingleThread(downloadVideoParams) {
-        const {url, headers, userAgent, proxyOption, target, groupPath} = downloadVideoParams;
+        const { url, headers, userAgent, proxyOption, target, groupPath } = downloadVideoParams;
         const axiosConfig = {
-            headers: headers || {"User-Agent": userAgent},
+            headers: headers || { "User-Agent": userAgent },
             responseType: "stream",
             ...proxyOption
         };
@@ -2016,7 +2389,7 @@ export class tools extends plugin {
             await checkAndRemoveFile(target);
 
             const res = await axios.get(url, axiosConfig);
-            logger.mark(`开始下载: ${url}`);
+            logger.mark(`开始下载: ${ url }`);
             const writer = fs.createWriteStream(target);
             res.data.pipe(writer);
 
@@ -2025,7 +2398,7 @@ export class tools extends plugin {
                 writer.on("error", reject);
             });
         } catch (err) {
-            logger.error(`下载视频发生错误！\ninfo:${err}`);
+            logger.error(`下载视频发生错误！\ninfo:${ err }`);
         }
     }
 
@@ -2035,17 +2408,14 @@ export class tools extends plugin {
      */
     async isOverseasServer() {
         // 如果第一次使用没有值就设置
-        if (!(await redis.exists(REDIS_YUNZAI_ISOVERSEA))) {
-            await redis.set(
-                REDIS_YUNZAI_ISOVERSEA,
-                JSON.stringify({
-                    os: false,
-                }),
-            );
+        if (!(await redisExistKey(REDIS_YUNZAI_ISOVERSEA))) {
+            await redisSetKey(REDIS_YUNZAI_ISOVERSEA, {
+                os: false,
+            })
             return true;
         }
         // 如果有就取出来
-        return JSON.parse((await redis.get(REDIS_YUNZAI_ISOVERSEA))).os;
+        return (await redisGetKey(REDIS_YUNZAI_ISOVERSEA)).os;
     }
 
     /**
@@ -2054,17 +2424,28 @@ export class tools extends plugin {
      */
     async isLagRangeDriver() {
         // 如果第一次使用没有值就设置
-        if (!(await redis.exists(REDIS_YUNZAI_LAGRANGE))) {
-            await redis.set(
-                REDIS_YUNZAI_LAGRANGE,
-                JSON.stringify({
-                    driver: 0,
-                }),
-            );
+        if (!(await redisExistKey(REDIS_YUNZAI_LAGRANGE))) {
+            await redisSetKey(REDIS_YUNZAI_LAGRANGE, {
+                driver: 0,
+            });
             return true;
         }
         // 如果有就取出来
-        return JSON.parse((await redis.get(REDIS_YUNZAI_LAGRANGE))).driver;
+        return (await redisGetKey(REDIS_YUNZAI_LAGRANGE)).driver;
+    }
+
+    /**
+     * 判断当前用户是否是信任用户
+     * @param userId
+     * @returns {Promise<boolean>}
+     */
+    async isTrustUser(userId) {
+        // 如果不存在则返回
+        if (!(await redisExistKey(REDIS_YUNZAI_WHITELIST))) {
+            return false;
+        }
+        const whiteList = await redisGetKey(REDIS_YUNZAI_WHITELIST);
+        return whiteList.includes(userId.toString()) || whiteList.includes(userId);
     }
 
     /**
@@ -2074,28 +2455,51 @@ export class tools extends plugin {
      * @param videoSizeLimit 发送转上传视频的大小限制，默认70MB
      */
     async sendVideoToUpload(e, path, videoSizeLimit = this.videoSizeLimit) {
-        // logger.info(videoSizeLimit);
-        const isLag = await this.isLagRangeDriver();
-        // 判断是否是拉格朗日
-        if (isLag === 1) {
-            // 构造拉格朗日适配器
-            const lagrange = new LagrangeAdapter(this.toolsConfig.lagrangeForwardWebSocket);
-            // 上传群文件
-            await lagrange.uploadGroupFile(e.user_id || e.sender.card, e.group_id, path);
-            // 上传完直接返回
-            return;
-        }
-        // 判断文件是否存在
-        if (!fs.existsSync(path)) {
-            return e.reply('视频不存在');
-        }
-        const stats = fs.statSync(path);
-        const videoSize = (stats.size / (1024 * 1024)).toFixed(2);
-        if (videoSize > videoSizeLimit) {
-            e.reply(`当前视频大小：${videoSize}MB，\n大于设置的最大限制，\n改为上传群文件`);
-            await this.uploadGroupFile(e, path);
-        } else {
-            e.reply(segment.video(path));
+        try {
+            // logger.info(videoSizeLimit);
+            const isLag = await this.isLagRangeDriver();
+            // 判断是否是拉格朗日
+            if (isLag === 1) {
+                // 构造拉格朗日适配器
+                const lagrange = new LagrangeAdapter(this.toolsConfig.lagrangeForwardWebSocket);
+                // 上传群文件
+                await lagrange.uploadGroupFile(e.user_id || e.sender.card, e.group_id, path);
+                // 上传完直接返回
+                return;
+            }
+            // 判断文件是否存在
+            if (!fs.existsSync(path)) {
+                return e.reply('视频不存在');
+            }
+            const stats = fs.statSync(path);
+            const videoSize = Math.floor(stats.size / (1024 * 1024));
+            // 预览视频逻辑
+            if (e.msg.startsWith("预览视频")) {
+                const keyframesPath = this.getCurDownloadPath(e) + "keyframes";
+                await mkdirIfNotExists(keyframesPath);
+                await extractKeyframes(path, keyframesPath);
+                const keyframes = await readCurrentDir(keyframesPath);
+                // logger.info(keyframes);
+                e.reply(Bot.makeForwardMsg(keyframes.map(keyframe => {
+                    return {
+                        message: segment.image(keyframesPath + "/" + keyframe),
+                        nickname: e.sender.card || e.user_id,
+                        user_id: e.user_id,
+                    };
+                })))
+                return;
+            }
+            // 正常发送视频
+            if (videoSize > videoSizeLimit) {
+                e.reply(`当前视频大小：${ videoSize }MB，\n大于设置的最大限制：${ videoSizeLimit }MB，\n改为上传群文件`);
+                await this.uploadGroupFile(e, path);
+            } else {
+                e.reply(segment.video(path));
+            }
+        } catch (err) {
+            logger.error(`[R插件][发送视频判断是否需要上传] 发生错误:\n ${ err }`);
+            // logger.info(logger.yellow(`上传发生错误，R插件正在为你采用备用策略，请稍等，如果发不出来请再次尝试！`));
+            // e.reply(segment.video(path));
         }
     }
 
@@ -2112,46 +2516,5 @@ export class tools extends plugin {
         } else {
             await e.group.sendFile(path);
         }
-    }
-
-    async makeForwardMsg(e, msg = [], dec = '') {
-        let userInfo = {
-            nickname: e.nickname,
-            user_id: e.user_id
-        }
-
-        let forwardMsg = []
-        msg.forEach(v => {
-            forwardMsg.push({
-                ...userInfo,
-                message: v
-            })
-        })
-
-        if (e.isGroup) {
-            forwardMsg = await e.group.makeForwardMsg(forwardMsg)
-        } else if (e.friend) {
-            forwardMsg = await e.friend.makeForwardMsg(forwardMsg)
-        } else {
-            return false
-        }
-
-        if (dec) {
-            if (typeof (forwardMsg.data) === 'object') {
-                let detail = forwardMsg.data?.meta?.detail
-                if (detail) {
-                    detail.news = [{text: dec}]
-                }
-            } else {
-                forwardMsg.data = forwardMsg.data
-                    .replace('<?xml version="1.0" encoding="utf-8"?>', '<?xml version="1.0" encoding="utf-8" ?>')
-                    .replace(/\n/g, '')
-                    .replace(/<title color="#777777" size="26">(.+?)<\/title>/g, '___')
-                    .replace(/___+/, `<title color="#777777" size="26">${dec}</title>`)
-            }
-
-        }
-
-        return forwardMsg
     }
 }

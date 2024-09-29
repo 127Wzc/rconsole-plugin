@@ -1,161 +1,51 @@
-import schedule from "node-schedule";
-import common from "../../../lib/common/common.js";
 import axios from "axios";
-import tunnel from "tunnel";
-import fs from "node:fs";
-import fetch from "node-fetch";
-import { mkdirIfNotExists } from "./file.js";
-import { TEN_THOUSAND } from "../constants/constant.js";
 import { exec } from "child_process";
 import { HttpsProxyAgent } from 'https-proxy-agent';
+import fetch from "node-fetch";
+import fs from "node:fs";
+import os from "os";
+import path from 'path';
+import { BILI_DOWNLOAD_METHOD, COMMON_USER_AGENT, SHORT_LINKS, TEN_THOUSAND } from "../constants/constant.js";
+import { mkdirIfNotExists } from "./file.js";
 
 /**
- * 请求模板
+ * 生成随机字符串
+ *
+ * @param {number} [randomlength=16] 生成的字符串长度，默认为16
+ * @returns {string} 生成的随机字符串
+ *
+ * @description
+ * 此函数生成一个指定长度的随机字符串。
+ * 字符串由大小写字母、数字和等号组成。
+ * 使用 Array.from 和箭头函数来创建随机字符数组，然后用 join 方法连接。
+ *
+ * @example
+ * const randomString = generateRandomStr(); // 生成默认长度16的随机字符串
+ * const randomString20 = generateRandomStr(20); // 生成长度为20的随机字符串
  */
-export class jFetch {
-    async get(url) {
-        const r = await fetch(url);
-        return await r.json();
-    }
-
-    async post(url, params) {
-        const r = await fetch(url, { ...params, method: "POST" });
-        return await r.json();
-    }
-}
-
-/**
- * 每日推送函数
- * @param func 回调函数
- * @param time cron
- * @param isAutoPush 是否推送（开关）
- */
-export function autoTask(func, time, groupList, isAutoPush = false) {
-    if (isAutoPush) {
-        schedule.scheduleJob(time, () => {
-            // 正常传输
-            if (groupList instanceof Array) {
-                for (let i = 0; i < groupList.length; i++) {
-                    const group = Bot.pickGroup(groupList[i]);
-                    func(group);
-                    common.sleep(1000);
-                }
-                // 防止恶意破坏函数
-            } else if (groupList instanceof String) {
-                const group = Bot.pickGroup(groupList[i]);
-                func(group);
-                common.sleep(1000);
-            } else {
-                throw Error("错误传入每日推送参数！");
-            }
-        });
-    }
-}
-
-/**
- * 重试函数（暂时只用于抖音的api）
- * @param func
- * @param maxRetries
- * @param delay
- * @returns {Promise<unknown>}
- */
-export function retry(func, maxRetries = 3, delay = 1000) {
-    return new Promise((resolve, reject) => {
-        const attempt = (remainingTries) => {
-            func()
-                .then(resolve)
-                .catch(error => {
-                    if (remainingTries === 1) {
-                        reject(error);
-                    } else {
-                        console.log(`错误: ${ error }. 重试将在 ${ delay / 1000 } 秒...`);
-                        setTimeout(() => attempt(remainingTries - 1), delay);
-                    }
-                });
-        };
-        attempt(maxRetries);
-    });
-}
-
-/**
- * 工具：下载pdf文件
- * @param url
- * @param filename
- * @returns {Promise<unknown>}
- */
-export function downloadPDF(url, filename) {
-    return axios({
-        url: url,
-        responseType: "stream",
-        headers: {
-            "User-Agent":
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/78.0.3904.97 Safari/537.36",
-        },
-    }).then(response => {
-        const writer = fs.createWriteStream(filename);
-        response.data.pipe(writer);
-        return new Promise((resolve, reject) => {
-            writer.on("finish", resolve);
-            writer.on("error", reject);
-        });
-    });
-}
-
-/**
- * 找到tiktok的视频id
- * @param url
- * @returns {Promise<string|string|null>}
- */
-export async function getIdVideo(url) {
-    const matching = url.includes("/video/");
-    if (!matching) {
-        return null;
-    }
-    const idVideo = url.substring(url.indexOf("/video/") + 7, url.length);
-    return idVideo.length > 19 ? idVideo.substring(0, idVideo.indexOf("?")) : idVideo;
-}
-
 export function generateRandomStr(randomlength = 16) {
-    const base_str = 'ABCDEFGHIGKLMNOPQRSTUVWXYZabcdefghigklmnopqrstuvwxyz0123456789='
-    let random_str = ''
-    for (let i = 0; i < randomlength; i++) {
-        random_str += base_str.charAt(Math.floor(Math.random() * base_str.length))
-    }
-    return random_str
+    const base_str = 'ABCDEFGHIGKLMNOPQRSTUVWXYZabcdefghigklmnopqrstuvwxyz0123456789=';
+    return Array.from({ length: randomlength }, () => base_str.charAt(Math.floor(Math.random() * base_str.length))).join('');
 }
 
 /**
  * 下载mp3
  * @param mp3Url    MP3地址
- * @param path      下载目录
+ * @param filePath      下载目录
  * @param title     音乐名
  * @param redirect  是否要重定向
  * @param audioType 建议填写 mp3 / m4a / flac 类型
  * @returns {Promise<unknown>}
  */
-export async function downloadAudio(mp3Url, path, title = "temp", redirect = "manual", audioType = "mp3") {
+export async function downloadAudio(mp3Url, filePath, title = "temp", redirect = "manual", audioType = "mp3") {
     // 如果没有目录就创建一个
-    await mkdirIfNotExists(path)
+    await mkdirIfNotExists(filePath)
 
     // 补充保存文件名
-    path += `/${ title }.${audioType}`;
-    if (fs.existsSync(path)) {
-        console.log(`音频已存在`);
-        fs.unlinkSync(path);
-    }
-
-    // 发起请求
-    const response = await fetch(mp3Url, {
-        headers: {
-            "User-Agent":
-                "Mozilla/5.0 (Linux; Android 5.0; SM-G900P Build/LRX21T) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/70.0.3538.25 Mobile Safari/537.36",
-        },
-        responseType: "stream",
-        redirect: redirect,
-    });
-
-    if (!response.ok) {
-        throw new Error(`Failed to fetch ${response.statusText}`);
+    filePath += `/${ title }.${ audioType }`;
+    if (fs.existsSync(filePath)) {
+        logger.info(`音频已存在`);
+        fs.unlinkSync(filePath);
     }
 
     try {
@@ -169,32 +59,76 @@ export async function downloadAudio(mp3Url, path, title = "temp", redirect = "ma
         });
 
         // 开始下载
-        const writer = fs.createWriteStream(path);
+        const writer = fs.createWriteStream(filePath);
 
         response.data.pipe(writer);
 
         return new Promise((resolve, reject) => {
-            writer.on('finish', () => resolve(path));
+            writer.on('finish', () => resolve(filePath));
             writer.on('error', reject);
         });
 
     } catch (error) {
-        console.error(`下载音乐失败，错误信息为: ${error.message}`);
+        logger.error(`下载音乐失败，错误信息为: ${ error.message }`);
         throw error;
     }
 }
 
 /**
- * 下载一张网络图片(自动以url的最后一个为名字)
- * @param {string} img
- * @param {string} dir
- * @param {string} fileName
- * @param {boolean} isProxy
- * @param {Object} headersExt
- * @param {Object} proxyInfo 参数：proxyAddr=地址，proxyPort=端口
- * @returns {Promise<unknown>}
+ * 下载图片网关
+ * @param {Object} options 参数对象
+ * @param {string} options.img 图片的URL
+ * @param {string} options.dir 保存图片的目录
+ * @param {string} [options.fileName] 自定义文件名 (可选)
+ * @param {boolean} [options.isProxy] 是否使用代理 (可选)
+ * @param {Object} [options.headersExt] 自定义请求头 (可选)
+ * @param {Object} [options.proxyInfo] 代理信息 (可选)
+ * @returns {Promise<string>}
  */
-export async function downloadImg(img, dir, fileName = "", isProxy = false, headersExt = {}, proxyInfo = {}) {
+export async function downloadImg({
+                                      img,
+                                      dir,
+                                      fileName = "",
+                                      isProxy = false,
+                                      headersExt = {},
+                                      proxyInfo = {},
+                                      downloadMethod = 0,
+                                  }) {
+    const downloadImgParams = {
+        img,
+        dir,
+        fileName,
+        isProxy,
+        headersExt,
+        proxyInfo,
+    }
+    logger.info(logger.yellow(`[R插件][图片下载] 当前使用的方法：${ BILI_DOWNLOAD_METHOD[downloadMethod].label }`));
+    if (downloadMethod === 0) {
+        return normalDownloadImg(downloadImgParams);
+    } else if (downloadMethod >= 1) {
+        return downloadImgWithAria2(downloadImgParams);
+    }
+}
+
+/**
+ * 正常下载图片
+ * @param {Object} options 参数对象
+ * @param {string} options.img 图片的URL
+ * @param {string} options.dir 保存图片的目录
+ * @param {string} [options.fileName] 自定义文件名 (可选)
+ * @param {boolean} [options.isProxy] 是否使用代理 (可选)
+ * @param {Object} [options.headersExt] 自定义请求头 (可选)
+ * @param {Object} [options.proxyInfo] 代理信息 (可选)
+ * @returns {Promise<string>}
+ */
+async function normalDownloadImg({
+                                     img,
+                                     dir,
+                                     fileName = "",
+                                     isProxy = false,
+                                     headersExt = {},
+                                     proxyInfo = {}
+                                 }) {
     if (fileName === "") {
         fileName = img.split("/").pop();
     }
@@ -203,8 +137,7 @@ export async function downloadImg(img, dir, fileName = "", isProxy = false, head
     const writer = fs.createWriteStream(filepath);
     const axiosConfig = {
         headers: {
-            "User-Agent":
-                "Mozilla/5.0 (Linux; Android 5.0; SM-G900P Build/LRX21T) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/70.0.3538.25 Mobile Safari/537.36",
+            "User-Agent": COMMON_USER_AGENT,
             ...headersExt
         },
         responseType: "stream",
@@ -233,8 +166,62 @@ export async function downloadImg(img, dir, fileName = "", isProxy = false, head
             });
         });
     } catch (err) {
-        logger.error(`图片下载失败, 原因：${err}`);
+        logger.error(`图片下载失败, 原因：${ err }`);
     }
+}
+
+/**
+ * 下载一张网络图片(使用aria2加速下载)
+ * @param {Object} options 参数对象
+ * @param {string} options.img 图片的URL
+ * @param {string} options.dir 保存图片的目录
+ * @param {string} [options.fileName] 自定义文件名 (可选)
+ * @param {boolean} [options.isProxy] 是否使用代理 (可选)
+ * @param {Object} [options.headersExt] 自定义请求头 (可选)
+ * @param {Object} [options.proxyInfo] 代理信息 (可选)
+ * @param {number} [options.numThread] 线程数 (可选)
+ * @returns {Promise<unknown>}
+ */
+async function downloadImgWithAria2({
+                                        img,
+                                        dir,
+                                        fileName = "",
+                                        isProxy = false,
+                                        headersExt = {},
+                                        proxyInfo = {},
+                                        numThread = 1,
+                                    }) {
+    if (fileName === "") {
+        fileName = img.split("/").pop();
+    }
+    const filepath = path.resolve(dir, fileName);
+    await mkdirIfNotExists(dir);
+
+    // 构建 aria2c 命令
+    let aria2cCmd = `aria2c "${ img }" --dir="${ dir }" --out="${ fileName }" --max-connection-per-server=${ numThread } --split=${ numThread } --min-split-size=1M --continue`;
+
+    // 如果需要代理
+    if (isProxy) {
+        aria2cCmd += ` --all-proxy="http://${ proxyInfo.proxyAddr }:${ proxyInfo.proxyPort }"`;
+    }
+
+    // 添加自定义headers
+    if (headersExt && Object.keys(headersExt).length > 0) {
+        for (const [headerName, headerValue] of Object.entries(headersExt)) {
+            aria2cCmd += ` --header="${ headerName }: ${ headerValue }"`;
+        }
+    }
+
+    return new Promise((resolve, reject) => {
+        exec(aria2cCmd, (error, stdout, stderr) => {
+            if (error) {
+                logger.error(`图片下载失败, 原因：${ error.message }`);
+                reject(error);
+                return;
+            }
+            resolve(filepath);
+        });
+    });
 }
 
 /**
@@ -308,41 +295,23 @@ export function containsChineseOrPunctuation(str) {
  * @returns {*|string}
  */
 export function truncateString(inputString, maxLength = 50) {
-    if (maxLength === 0 || maxLength === -1) {
-        return inputString;
-    } else if (inputString.length <= maxLength) {
-        return inputString;
-    } else {
-        // 截取字符串，保留前面 maxLength 个字符
-        let truncatedString = inputString.substring(0, maxLength);
-        // 添加省略号
-        truncatedString += '...';
-        return truncatedString;
-    }
+    return maxLength === 0 || maxLength === -1 || inputString.length <= maxLength
+        ? inputString
+        : inputString.substring(0, maxLength) + '...';
 }
 
 /**
  * 测试当前是否存在🪜
  * @returns {Promise<Boolean>}
  */
-export async function testProxy(host='127.0.0.1', port=7890) {
-    // 配置代理服务器
-    const proxyOptions = {
-        host: host,
-        port: port,
-        // 如果你的代理服务器需要认证
-        // auth: 'username:password', // 取消注释并提供实际的用户名和密码
-    };
-
+export async function testProxy(host = '127.0.0.1', port = 7890) {
     // 创建一个代理隧道
-    const httpsAgent = tunnel.httpsOverHttp({
-        proxy: proxyOptions
-    });
+    const httpsAgent = new HttpsProxyAgent(`http://${ host }:${ port }`);
 
     try {
         // 通过代理服务器发起请求
         await axios.get('https://www.google.com', { httpsAgent });
-        logger.mark('[R插件][梯子测试模块] 检测到梯子');
+        logger.mark(logger.yellow('[R插件][梯子测试模块] 检测到梯子'));
         return true;
     } catch (error) {
         logger.error('[R插件][梯子测试模块] 检测不到梯子');
@@ -353,7 +322,7 @@ export async function testProxy(host='127.0.0.1', port=7890) {
 export function formatSeconds(seconds) {
     const minutes = Math.floor(seconds / 60);
     const remainingSeconds = seconds % 60;
-    return `${minutes}分${remainingSeconds}秒`;
+    return `${ minutes }分${ remainingSeconds }秒`;
 }
 
 /**
@@ -372,7 +341,7 @@ export async function retryAxiosReq(requestFunction, retries = 3, delay = 1000) 
         return response.data;
     } catch (error) {
         if (retries > 0) {
-            logger.mark(`[R插件][重试模块]重试中... (${3 - retries + 1}/3) 次`);
+            logger.mark(`[R插件][重试模块]重试中... (${ 3 - retries + 1 }/3) 次`);
             await new Promise(resolve => setTimeout(resolve, delay));
             return retryAxiosReq(requestFunction, retries - 1, delay);
         } else {
@@ -410,20 +379,23 @@ export function estimateReadingTime(text, wpm = 200) {
 }
 
 /**
- * 检查是否存在某个命令
- * @param command
+ * 检测当前环境是否存在某个命令
+ * @param someCommand
  * @returns {Promise<boolean>}
  */
-export function checkCommandExists(command) {
+export function checkToolInCurEnv(someCommand) {
+    // 根据操作系统选择命令
     return new Promise((resolve, reject) => {
-        exec(`which ${command}`, (error, stdout, stderr) => {
+        const command = os.platform() === 'win32' ? `where ${ someCommand }` : `which ${ someCommand }`;
+
+        exec(command, (error, stdout, stderr) => {
             if (error) {
-                // Command not found
+                logger.error(`[R插件][命令环境检测]未找到${ someCommand }: ${ stderr || error.message }`);
                 resolve(false);
-            } else {
-                // Command found
-                resolve(true);
+                return;
             }
+            logger.info(`[R插件][命令环境检测]找到${ someCommand }: ${ stdout.trim() }`);
+            resolve(true);
         });
     });
 }
@@ -455,14 +427,32 @@ export function saveJsonToFile(jsonData, filename = "data.json") {
  * @returns {string}
  */
 export function cleanFilename(filename) {
-    // 去除省略号（…）
-    filename = filename.replace(/…/g, '');
-    // 删除括号及其内容
-    filename = filename.replace(/\(|\)/g, '');
-    // 删除反斜杠
-    filename = filename.replace(/\//g, '');
-
-    filename = filename.trim();
+    // 1. 去除特殊字符
+    // 2. 去除特定词汇
+    filename = filename.replace(/[\/\?<>\\:\*\|".…《》()]/g, '')
+        .replace(/电影|主题曲/g, '')
+        .trim();
 
     return filename;
+}
+
+/**
+ * 转换短链接
+ * @param url
+ * @returns {Promise<string>}
+ */
+export async function urlTransformShortLink(url) {
+    const data = {
+        url: `${ encodeURI(url) }`
+    };
+
+    const resp = await fetch(SHORT_LINKS, {
+        method: 'POST',
+        headers: {
+            'Accept': 'application/json',
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(data)
+    }).then(response => response.json());
+    return await resp.data.short_url;
 }

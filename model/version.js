@@ -1,6 +1,6 @@
-import base from './base.js'
+import Base from './base.js'
 
-export default class Version extends base {
+export default class Version extends Base {
     constructor (e) {
         super(e)
         this.model = 'version'
@@ -10,13 +10,12 @@ export default class Version extends base {
     async getData (versionData) {
         const version =
             (versionData && versionData.length && versionData[0].version) || '1.0.0'
-        let data = {
+        return {
             ...this.screenData,
             userId: version,
             quality: 100,
             saveId: version,
             versionData
         }
-        return data
     }
 }

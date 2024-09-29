@@ -1,13 +1,16 @@
-import path from "path";
-import model from "./model/index.js";
 import _ from "lodash";
+import path from "path";
+import { BILI_CDN_SELECT_LIST, BILI_DOWNLOAD_METHOD, BILI_RESOLUTION_LIST } from "./constants/constant.js";
+import model from "./model/config.js";
 
-const _path = process.cwd() + "/plugins/rconsole-plugin";
+const pluginName = `rconsole-plugin`;
+
+const _path = process.cwd() + `/plugins/${pluginName}`;
 export function supportGuoba() {
     return {
         pluginInfo: {
             name: "R插件",
-            title: "rconsole-plugin",
+            title: pluginName,
             author: "@zhiyu",
             authorLink: "https://gitee.com/kyrzy0416",
             link: "https://gitee.com/kyrzy0416/rconsole-plugin",
@@ -22,7 +25,7 @@ export function supportGuoba() {
             icon: 'mdi:stove',
             // 图标颜色，例：#FF0000 或 rgb(255, 0, 0)
             iconColor: '#d19f56',
-            iconPath: path.join(_path, "resources/img/rank/top.png"),
+            iconPath: path.join(_path, "resources/img/rank/logo.png"),
         },
         configInfo: {
             schemas: [
@@ -47,23 +50,23 @@ export function supportGuoba() {
                     },
                 },
                 {
-                    field: "tools.translateAppId",
-                    label: "百度翻译APP ID",
-                    bottomHelpMessage: "使用百度翻译需要的APP ID（需要申请）",
+                    field: "tools.identifyPrefix",
+                    label: "识别前缀",
+                    bottomHelpMessage: "识别前缀，比如你识别哔哩哔哩，那么就有：✅ 识别：哔哩哔哩",
                     component: "Input",
                     required: false,
                     componentProps: {
-                        placeholder: "请输入APP ID",
+                        placeholder: "请输入识别前缀",
                     },
                 },
                 {
-                    field: "tools.translateSecret",
-                    label: "百度翻译密匙",
-                    bottomHelpMessage: "使用百度翻译需要的密匙（需要申请）",
+                    field: "tools.deeplApiUrls",
+                    label: "DeeplX API地址集合",
+                    bottomHelpMessage: "可以参考：https://github.com/OwO-Network/DeepLX，进行搭建，也可以使用内置",
                     component: "Input",
                     required: false,
                     componentProps: {
-                        placeholder: "请输入密匙",
+                        placeholder: "请输入DeeplX API地址集合",
                     },
                 },
                 {
@@ -122,12 +125,81 @@ export function supportGuoba() {
                     },
                 },
                 {
+                    field: "tools.biliDisplayCover",
+                    label: "是否显示封面",
+                    bottomHelpMessage:
+                        "默认显示，哔哩哔哩是否显示封面",
+                    component: "Switch",
+                    required: true,
+                },
+                {
+                    field: "tools.biliDisplayInfo",
+                    label: "是否显示相关信息",
+                    bottomHelpMessage:
+                        "默认显示，哔哩哔哩是否显示相关信息（点赞、硬币、收藏、分享、播放数、弹幕数、评论数）",
+                    component: "Switch",
+                    required: true,
+                },
+                {
+                    field: "tools.biliDisplayIntro",
+                    label: "是否显示简介",
+                    bottomHelpMessage:
+                        "默认显示，哔哩哔哩是否显示简介",
+                    component: "Switch",
+                    required: true,
+                },
+                {
+                    field: "tools.biliDisplayOnline",
+                    label: "是否显示在线人数",
+                    bottomHelpMessage:
+                        "默认显示，哔哩哔哩是否显示在线人数",
+                    component: "Switch",
+                    required: true,
+                },
+                {
+                    field: "tools.biliDisplaySummary",
+                    label: "是否显示总结",
+                    bottomHelpMessage:
+                        "默认不显示，哔哩哔哩是否显示总结",
+                    component: "Switch",
+                    required: true,
+                },
+                {
                     field: "tools.biliUseBBDown",
                     label: "使用BBDown下载",
                     bottomHelpMessage:
                         "【默认不开启，涉及范围只有哔哩哔哩，开启后默认最高画质发送】如果不爱折腾就使用默认下载方式，如果喜欢折腾就开启，开启后下载更强劲，并且一劳永逸！",
                     component: "Switch",
                     required: false,
+                },
+                {
+                    field: "tools.biliCDN",
+                    label: "强制使用CDN",
+                    bottomHelpMessage: "BBDown强制使用CDN：【只影响开启后的BBDown，一定程度可以影响BBDown速度】哔哩哔哩的CDN地址更换，如果不需要默认不使用，如果选择了其他的CDN将会使用",
+                    component: "Select",
+                    componentProps: {
+                        options: BILI_CDN_SELECT_LIST,
+                    }
+                },
+                {
+                    field: "tools.biliDownloadMethod",
+                    label: "bili下载方式",
+                    bottomHelpMessage:
+                        "哔哩哔哩的下载方式：默认使用原生稳定的下载方式，如果你在乎内存可以使用轻量的wget和axel下载方式，如果在乎性能可以使用Aria2下载",
+                    component: "Select",
+                    componentProps: {
+                        options: BILI_DOWNLOAD_METHOD,
+                    }
+                },
+                {
+                    field: "tools.biliResolution",
+                    label: "bili最高分辨率",
+                    bottomHelpMessage:
+                        "哔哩哔哩的最高分辨率（目前仅适用于开启BBDown后），默认为1080p，可以自行根据服务器进行调整",
+                    component: "Select",
+                    componentProps: {
+                        options: BILI_RESOLUTION_LIST,
+                    }
                 },
                 {
                     field: "tools.douyinCookie",
@@ -241,9 +313,8 @@ export function supportGuoba() {
                 for (let [key, value] of Object.entries(data)) {
                     _.set(config, key, value);
                 }
-                // TODO 目前只有一个文件的配置，暂时这样写
                 config = _.merge({}, model.getConfig("tools"), config.tools);
-                model.saveSet("tools", config);
+                model.saveAllConfig("tools", config);
                 return Result.ok({}, "保存成功~");
             },
         },

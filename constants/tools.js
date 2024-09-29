@@ -62,6 +62,27 @@ export const BILI_SCAN_CODE_DETECT = "https://passport.bilibili.com/x/passport-l
 export const BILI_STREAM_INFO = "https://api.live.bilibili.com/room/v1/Room/get_info"
 
 /**
+ * 获取视频在线人数_web端
+ * https://github.com/SocialSisterYi/bilibili-API-collect/blob/master/docs/video/online.md
+ * @type {string}
+ */
+export const BILI_ONLINE = "https://api.bilibili.com/x/player/online/total?bvid={0}&cid={1}"
+
+/**
+ * 剧集基本信息
+ * https://github.com/SocialSisterYi/bilibili-API-collect/blob/master/docs/bangumi/info.md
+ * @type {string}
+ */
+export const BILI_EP_INFO = "https://api.bilibili.com/pgc/view/web/season?ep_id={}"
+
+/**
+ * 剧集基本信息
+ * https://github.com/SocialSisterYi/bilibili-API-collect/blob/master/docs/bangumi/info.md
+ * @type {string}
+ */
+export const BILI_SSID_INFO = "https://api.bilibili.com/pgc/web/season/section?season_id={}"
+
+/**
  * 米游社网页端获取文章
  * https://github.com/UIGF-org/mihoyo-api-collect/blob/main/hoyolab/article/article.md#%E8%8E%B7%E5%8F%96%E5%AE%8C%E6%95%B4%E6%96%87%E7%AB%A0%E4%BF%A1%E6%81%AF
  * @type {string}
@@ -143,17 +164,24 @@ export const NETEASE_SONG_DETAIL = "https://neteasecloudmusicapi.vercel.app"
 export const NETEASE_API_CN = 'https://www.markingchen.ink';
 
 /**
- * 下载VIP的临时接口 (感谢桑帛云API，如果站长能看到)
- * 备用：另外一个兜底策略：https://www.hhlqilongzhu.cn/api/dg_wyymusic.php?gm={搜索内容}&n=1&type=json
+ * 下载VIP的临时接口
+ * 备用：https://api.lolimi.cn/API/wydg/api.php?msg={}&n=1
+ * 备用2: http://kilz.top/api/wangyi_music.php?msg={}&n=1
  * @type {string}
  */
-export const NETEASE_TEMP_API = "https://api.lolimi.cn/API/wydg/api.php?msg={}&n=1"
+export const NETEASE_TEMP_API = "https://www.hhlqilongzhu.cn/api/dg_wyymusic.php?gm={}&n=1&type=json"
 
 /**
  * 下载VIP的临时接口2
  * @type {string}
  */
-export const QQ_MUSIC_TEMP_API = "https://api.lolimi.cn/API/yiny/?word={}&n=1&q=8"
+export const QQ_MUSIC_TEMP_API = "https://www.hhlqilongzhu.cn/api/dg_qqmusic.php?gm={}&n=1&type=json"
+
+/**
+ * 下载VIP的临时接口3
+ * @type {string}
+ */
+export const QISHUI_MUSIC_TEMP_API = "https://api.cenguigui.cn/api/qishui/?msg={}&limit=1&type=json&n=1"
 
 /**
  * 单条微博的接口
@@ -166,3 +194,33 @@ export const WEIBO_SINGLE_INFO = "https://m.weibo.cn/statuses/show?id={}"
  * @type {string}
  */
 export const WEISHI_VIDEO_INFO = "https://h5.weishi.qq.com/webapp/json/weishi/WSH5GetPlayPage?feedid={}"
+
+/**
+ * 番剧搜索链接
+ * @type {string}
+ */
+export const ANIME_SERIES_SEARCH_LINK = "https://ylu.cc/so.php?wd="
+
+/**
+ * 番剧搜索链接2
+ * @type {string}
+ */
+export const ANIME_SERIES_SEARCH_LINK2 = "https://yhdm.one/search?q="
+
+/**
+ * HIBI API
+ * @type {string}
+ */
+export const HIBI_API_SERVICE = "https://hibi.moecube.com/api";
+
+/**
+ * 临时 AI LLM爬虫
+ * @type {string}
+ */
+export const PearAPI_CRAWLER = "https://api.pearktrue.cn/api/llmreader/?url={}&type=json";
+
+/**
+ * 临时 AI 总结
+ * @type {string}
+ */
+export const PearAPI_DEEPSEEK = "https://api.pearktrue.cn/api/deepseek/"

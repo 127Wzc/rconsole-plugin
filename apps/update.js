@@ -1,10 +1,11 @@
 // 主库
 import Version from "../model/version.js";
-import config from "../model/index.js";
+import config from "../model/config.js";
 import puppeteer from "../../../lib/puppeteer/puppeteer.js";
 import lodash from "lodash";
 import YAML from "yaml";
 import fs from "node:fs";
+import path from "path";
 
 import { exec, execSync } from "node:child_process";
 import { copyFiles, deleteFolderRecursive, readCurrentDir } from "../utils/file.js";
@@ -12,7 +13,12 @@ import { copyFiles, deleteFolderRecursive, readCurrentDir } from "../utils/file.
 /**
  * 处理插件更新1
  */
-export class update extends plugin {
+export class Update extends plugin {
+    static pluginName = (() => {
+        const packageJsonPath = path.join('./plugins', 'rconsole-plugin', 'package.json');
+        const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
+        return packageJson.name;
+    })();
     constructor() {
         super({
             name: "R插件更新插件",
@@ -58,16 +64,14 @@ export class update extends plugin {
 
         let isForce = !!e.msg.includes("强制");
 
-        const pluginName = "rconsole-plugin";
-
         // 保存配置文件
-        await copyFiles(`./plugins/${pluginName}/config`, "./temp/rconsole-update-tmp");
+        await copyFiles(`./plugins/${Update.pluginName}/config`, "./temp/rconsole-update-tmp");
 
-        let command = `git -C ./plugins/${pluginName}/ pull --no-rebase`;
+        let command = `git -C ./plugins/${Update.pluginName}/ pull --no-rebase`;
         if (isForce) {
-            command = `git -C ./plugins/${pluginName}/ checkout . && ${command}`;
+            command = `git -C ./plugins/${Update.pluginName}/ checkout . && ${command}`;
         }
-        this.oldCommitId = await this.getCommitId(pluginName);
+        this.oldCommitId = await this.getCommitId(Update.pluginName);
         await e.reply("正在执行更新操作，请稍等");
 
         let ret = await this.execSync(command);
@@ -76,13 +80,13 @@ export class update extends plugin {
             await this.gitErr(ret.error, ret.stdout);
             return false;
         }
-        const time = await this.getTime(pluginName);
+        const time = await this.getTime(Update.pluginName);
         if (/Already up|已经是最新/g.test(ret.stdout)) {
             e.reply(`R插件已经是最新: ${this.versionData[0].version}`);
         } else {
             this.isUp = true;
             e.reply(`R插件更新成功，最后更新时间：${time}`);
-            e.reply(await this.getLog(pluginName));
+            e.reply(await this.getLog(Update.pluginName));
         }
 
         // 读取配置文件比对更新
@@ -90,7 +94,7 @@ export class update extends plugin {
         for (let confFile of confFiles) {
             await this.compareAndUpdateYaml(
                 `./temp/rconsole-update-tmp/${confFile}`,
-                `./plugins/${pluginName}/config/${confFile}`
+                `./plugins/${Update.pluginName}/config/${confFile}`
             );
         }
         // 删除临时文件
@@ -167,14 +171,14 @@ export class update extends plugin {
             await this.reply(
                 msg +
                 `存在冲突：\n${errMsg}\n` +
-                "请解决冲突后再更新，或者执行#强制更新，放弃本地修改",
+                "请解决冲突后再更新，或者执行#R强制更新，放弃本地修改",
             );
         } else if (stdout.includes("CONFLICT")) {
             await this.reply([
                 msg + "存在冲突\n",
                 errMsg,
                 stdout,
-                "\n请解决冲突后再更新，或者执行#强制更新，放弃本地修改",
+                "\n请解决冲突后再更新，或者执行#R强制更新，放弃本地修改",
             ]);
         } else {
             await this.reply([errMsg, stdout]);
