@@ -429,6 +429,8 @@ export class tools extends plugin {
         this.weiboComments = this.toolsConfig.weiboComments ?? true;
         // 加载小黑盒Cookie
         this.xiaoheiheCookie = this.toolsConfig.xiaoheiheCookie;
+        // 抖音视频下载源成功记录，仅在当前进程内用于优先尝试更快/更稳的域名
+        this.douyinVideoHostStats = tools.douyinVideoHostStats ??= new Map();
     }
 
     // 翻译插件
@@ -473,7 +475,14 @@ export class tools extends plugin {
         let douUrl = urlRex.exec(e.msg.trim())[0];
         let ttwid = '';
         if (douUrl.includes("v.douyin.com")) {
-            const { location, ttwidValue } = await this.douyinRequest(douUrl);
+            let location, ttwidValue;
+            try {
+                ({ location, ttwidValue } = await this.douyinRequest(douUrl));
+            } catch (error) {
+                logger.warn(`[R插件][抖音] 短链展开失败: ${error.message || error}`);
+                e.reply("抖音短链展开失败，可能是抖音访问慢或触发风控，请稍后再试");
+                return true;
+            }
             ttwid = ttwidValue;
             douUrl = location;
         }
@@ -630,7 +639,8 @@ export class tools extends plugin {
             if (urlType === "video") {
                 // logger.info(item.video);
                 // 多位面选择：play_addr、play_addr_265、play_addr_h264
-                const { play_addr: { uri: videoAddrURI }, duration, cover } = item.video;
+                const { duration, cover } = item.video;
+                const videoAddrURI = item.video?.play_addr_h264?.uri || item.video?.play_addr?.uri || item.video?.play_addr_265?.uri;
                 // 进行时间判断，如果超过时间阈值就不发送
                 const dyDuration = Math.trunc(duration / 1000);
                 const durationThreshold = this.douyinDuration;
@@ -648,17 +658,9 @@ export class tools extends plugin {
                     await this.douyinComment(e, douId, headers, item.desc, dyCover, item.author);
                     return;
                 }
-                // 封面
-                const dyCover = cover.url_list?.at(-1) || cover.url_list?.[0];
-                if (this.douyinDisplayCover && dyCover) {
-                    await replyWithRetry(e, Bot, [segment.image(dyCover), dySendContent]);
-                } else {
-                    e.reply(dySendContent);
-                }
                 // 分辨率判断是否压缩
                 const resolution = this.douyinCompression ? "720p" : "1080p";
-                // 使用今日头条 CDN 进一步加快解析速度
-                const resUrl = DY_TOUTIAO_INFO.replace("1080p", resolution).replace("{}", videoAddrURI);
+                const resUrls = this.getDouyinVideoDownloadUrls(item.video, videoAddrURI, resolution);
 
                 // ⚠️ 暂时废弃代码
                 /*if (this.douyinCompression) {
@@ -672,11 +674,20 @@ export class tools extends plugin {
                     resUrl = videoAddrList[videoAddrList.length - 1] || videoAddrList[0];
                 }*/
 
-                // logger.info(resUrl);
-                // 加入队列
-                await this.downloadVideo(resUrl, false, null, this.videoDownloadConcurrency, 'douyin.mp4').then((videoPath) => {
-                    this.sendVideoToUpload(e, videoPath);
-                });
+                if (resUrls.length === 0) {
+                    e.reply("抖音视频下载地址获取失败，请稍后再试");
+                    return true;
+                }
+
+                // 封面发送和视频下载并行进行，弱网下能减少整体等待时间
+                const dyCover = cover.url_list?.at(-1) || cover.url_list?.[0];
+                const coverReplyPromise = this.douyinDisplayCover && dyCover
+                    ? replyWithRetry(e, Bot, [segment.image(dyCover), dySendContent])
+                    : Promise.resolve(e.reply(dySendContent));
+                coverReplyPromise.catch(err => logger.warn(`[R插件][抖音] 封面/简介发送失败，继续发送视频: ${err.message}`));
+                const videoDownloadPromise = this.downloadDouyinVideoWithFallback(resUrls, `douyin_${douId}_${Date.now()}.mp4`, "[R插件][抖音]");
+                const videoPath = await videoDownloadPromise;
+                await this.sendVideoToUpload(e, videoPath);
                 // 如果开启评论的话就调用
                 await this.douyinComment(e, douId, headers, item.desc, dyCover, item.author);
             } else if (urlType === "image") {
@@ -802,6 +813,133 @@ export class tools extends plugin {
         }
     }
 
+    getDouyinVideoDownloadUrls(video, fallbackUri, resolution = "1080p") {
+        const addUrlList = (urlList, urls) => {
+            if (!Array.isArray(urlList) || urlList.length === 0) {
+                return;
+            }
+            const normalizedUrls = [...urlList].reverse().filter(url => typeof url === "string" && url.length > 0);
+            for (const url of normalizedUrls.filter(url => url.startsWith("https://"))) {
+                if (!urls.includes(url)) {
+                    urls.push(url);
+                }
+            }
+            for (const url of normalizedUrls.filter(url => !url.startsWith("https://"))) {
+                if (!urls.includes(url)) {
+                    urls.push(url);
+                }
+            }
+        };
+
+        const candidateLists = this.douyinCompression
+            ? [
+                video?.play_addr_h264?.url_list,
+                video?.play_addr?.url_list,
+                video?.play_addr_265?.url_list,
+            ]
+            : [
+                video?.play_addr?.url_list,
+                video?.play_addr_h264?.url_list,
+                video?.play_addr_265?.url_list,
+            ];
+
+        const urls = [];
+        for (const urlList of candidateLists) {
+            addUrlList(urlList, urls);
+        }
+
+        const videoUri = fallbackUri || video?.play_addr_h264?.uri || video?.play_addr?.uri || video?.play_addr_265?.uri;
+        if (videoUri) {
+            const awemeUrl = DY_TOUTIAO_INFO.replace("1080p", resolution).replace("{}", videoUri);
+            if (!urls.includes(awemeUrl)) {
+                urls.push(awemeUrl);
+            }
+        }
+        return urls;
+    }
+
+    async downloadDouyinVideoWithFallback(urls, fileName, logPrefix = "[R插件][抖音]") {
+        let remainingUrls = this.prioritizeDouyinVideoUrls(urls);
+        let hasProbedAfterFailure = false;
+        let lastError;
+        let attempt = 0;
+        while (remainingUrls.length > 0) {
+            const url = remainingUrls.shift();
+            attempt++;
+            try {
+                logger.info(`${logPrefix} 尝试视频下载源 ${attempt}/${urls.length}: ${new URL(url).hostname}`);
+                const videoPath = await this.downloadVideo(url, false, null, this.videoDownloadConcurrency, fileName);
+                this.rememberDouyinVideoHost(url);
+                return videoPath;
+            } catch (err) {
+                lastError = err;
+                logger.warn(`${logPrefix} 视频下载源失败 ${attempt}/${urls.length}: ${new URL(url).hostname} - ${err.message}`);
+                if (!hasProbedAfterFailure && remainingUrls.length > 1) {
+                    hasProbedAfterFailure = true;
+                    remainingUrls = await this.sortDouyinVideoUrlsByProbe(remainingUrls, logPrefix);
+                }
+            }
+        }
+        throw lastError || new Error("所有抖音视频下载源均失败");
+    }
+
+    prioritizeDouyinVideoUrls(urls) {
+        const statTtl = 30 * 60 * 1000;
+        const now = Date.now();
+        return [...urls].sort((a, b) => {
+            const aStat = this.douyinVideoHostStats.get(new URL(a).hostname);
+            const bStat = this.douyinVideoHostStats.get(new URL(b).hostname);
+            const aScore = aStat && now - aStat.lastSuccessAt < statTtl ? aStat.success : 0;
+            const bScore = bStat && now - bStat.lastSuccessAt < statTtl ? bStat.success : 0;
+            return bScore - aScore;
+        });
+    }
+
+    rememberDouyinVideoHost(url) {
+        const hostname = new URL(url).hostname;
+        const stat = this.douyinVideoHostStats.get(hostname) || { success: 0 };
+        stat.success += 1;
+        stat.lastSuccessAt = Date.now();
+        this.douyinVideoHostStats.set(hostname, stat);
+    }
+
+    async sortDouyinVideoUrlsByProbe(urls, logPrefix = "[R插件][抖音]", limit = 6) {
+        const probeUrls = urls.slice(0, limit);
+        const untouchedUrls = urls.slice(limit);
+        const probeResults = await Promise.all(probeUrls.map(async (url, index) => ({
+            url,
+            index,
+            ok: await this.probeDouyinVideoUrl(url),
+        })));
+        const availableUrls = probeResults.filter(item => item.ok).sort((a, b) => a.index - b.index).map(item => item.url);
+        const delayedUrls = probeResults.filter(item => !item.ok).sort((a, b) => a.index - b.index).map(item => item.url);
+        if (availableUrls.length > 0) {
+            logger.info(`${logPrefix} 下载源失败后快速探测可用源 ${availableUrls.length}/${probeUrls.length}: ${availableUrls.map(url => new URL(url).hostname).join(", ")}`);
+            return [...availableUrls, ...delayedUrls, ...untouchedUrls];
+        }
+        logger.warn(`${logPrefix} 下载源失败后快速探测没有命中可用源，将按原顺序尝试`);
+        return urls;
+    }
+
+    async probeDouyinVideoUrl(url, timeout = 2500) {
+        try {
+            const response = await axios.get(url, {
+                headers: {
+                    "User-Agent": "Mozilla/5.0 (Linux; Android 5.0; SM-G900P Build/LRX21T) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/70.0.3538.25 Mobile Safari/537.36",
+                    "Range": "bytes=0-0",
+                },
+                responseType: "stream",
+                timeout,
+                maxRedirects: 3,
+                validateStatus: status => status >= 200 && status < 400,
+            });
+            response.data?.destroy?.();
+            return true;
+        } catch (err) {
+            return false;
+        }
+    }
+
     /**
      * 处理抖音动图
      * @param {Object} e 消息对象
@@ -847,17 +985,18 @@ export class tools extends plugin {
                     // 动图：下载视频并与BGM合并
                     // 分辨率判断是否压缩
                     const resolution = this.douyinCompression ? "720p" : "1080p";
-                    // 使用今日头条 CDN 进一步加快解析速度
-                    const videoUrl = DY_TOUTIAO_INFO.replace("1080p", resolution).replace("{}", videoUri);
-
-                    logger.info(`[R插件][抖音动图] 下载动图 ${index + 1}: ${videoUrl}`);
+                    const videoUrls = this.getDouyinVideoDownloadUrls(imageItem.video, videoUri, resolution);
+                    if (videoUrls.length === 0) {
+                        logger.warn(`[R插件][抖音动图] 第${index + 1}项无法获取视频URL，跳过`);
+                        return;
+                    }
 
                     // 使用内置下载方法 带重试逻辑
                     let videoPath = null;
                     const maxRetries = 3;
                     for (let retry = 0; retry < maxRetries; retry++) {
                         try {
-                            videoPath = await this.downloadVideo(videoUrl, false, null, this.videoDownloadConcurrency, `douyin_gif_${index}_${Date.now()}.mp4`);
+                            videoPath = await this.downloadDouyinVideoWithFallback(videoUrls, `douyin_gif_${index}_${Date.now()}.mp4`, `[R插件][抖音动图][${index + 1}]`);
                             if (videoPath) break;
                         } catch (downloadErr) {
                             logger.warn(`[R插件][抖音动图] 第${index + 1}个视频下载失败，重试 ${retry + 1}/${maxRetries}`);
@@ -4879,41 +5018,76 @@ export class tools extends plugin {
     async douyinRequest(url) {
         const params = {
             headers: {
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
                 "User-Agent": COMMON_USER_AGENT,
             },
             timeout: 10000,
+            maxRedirects: 0,
+            validateStatus: status => status >= 200 && status < 400,
         };
-        try {
-            const resp = await axios.get(url, params);
+        const maxHops = 3;
+        const maxRetries = 2;
+        let currentUrl = url;
+        let ttwidValue;
+        let lastError;
 
-            const location = resp.request.res.responseUrl;
-
-            const setCookieHeaders = resp.headers['set-cookie'];
-            let ttwidValue;
-            if (setCookieHeaders) {
-                setCookieHeaders.forEach(cookie => {
-                    // 使用正则表达式提取 ttwid 的值
-                    const ttwidMatch = cookie.match(/ttwid=([^;]+)/);
-                    if (ttwidMatch) {
-                        ttwidValue = ttwidMatch[1];
+        for (let hop = 1; hop <= maxHops; hop++) {
+            let resp;
+            for (let retry = 1; retry <= maxRetries; retry++) {
+                try {
+                    resp = await axios.get(currentUrl, params);
+                    break;
+                } catch (error) {
+                    lastError = error;
+                    if (retry < maxRetries) {
+                        logger.warn(`[R插件][抖音] 短链第 ${hop} 跳请求失败，重试 ${retry}/${maxRetries}: ${error.message}`);
+                        await new Promise(resolve => setTimeout(resolve, 1000));
+                        continue;
                     }
-                });
+                    throw error;
+                }
             }
 
-            return new Promise((resolve, reject) => {
-                if (location != null) {
-                    return resolve({
-                        location: location,
-                        ttwidValue: ttwidValue
-                    });
-                } else {
-                    return reject("获取失败");
+            const setCookieHeaders = resp.headers['set-cookie'];
+            for (const cookie of [].concat(setCookieHeaders || [])) {
+                const ttwidMatch = cookie.match(/ttwid=([^;]+)/);
+                if (ttwidMatch) {
+                    ttwidValue = ttwidMatch[1];
                 }
-            });
-        } catch (error) {
-            logger.error(error);
-            throw error;
+            }
+
+            const redirectLocation = resp.headers.location;
+            const responseUrl = resp.request?.res?.responseUrl;
+            const location = redirectLocation
+                ? new URL(redirectLocation, currentUrl).toString()
+                : responseUrl !== currentUrl ? responseUrl : undefined;
+
+            if (!location) {
+                break;
+            }
+
+            logger.info(`[R插件][抖音] 短链第 ${hop} 跳: ${currentUrl} -> ${location}`);
+            if (this.isResolvedDouyinUrl(location) || hop === maxHops) {
+                return {
+                    location: location,
+                    ttwidValue: ttwidValue
+                };
+            }
+            currentUrl = location;
         }
+
+        throw lastError || new Error("获取抖音跳转地址失败");
+    }
+
+    isResolvedDouyinUrl(url) {
+        return /\/note\/\d+/.test(url) ||
+            /\/video\/\d+/.test(url) ||
+            /\/live\/\d+/.test(url) ||
+            /\/share\/slides\/\d+/.test(url) ||
+            /live\.douyin\.com\/\d+/.test(url) ||
+            /webcast\.amemv\.com\/douyin\/webcast\/reflow\/\d+/.test(url) ||
+            /modal_id=\d+/.test(url);
     }
 
 
@@ -5058,6 +5232,12 @@ export class tools extends plugin {
         });
     }
 
+    isTlsCertificateHostError(err) {
+        const message = err?.message || "";
+        return err?.code === "ERR_TLS_CERT_ALTNAME_INVALID" ||
+            message.includes("Hostname/IP does not match certificate");
+    }
+
     /**
      * 多线程下载视频
      * @link {downloadVideo}
@@ -5081,6 +5261,9 @@ export class tools extends plugin {
                     });
                     break;
                 } catch (err) {
+                    if (this.isTlsCertificateHostError(err)) {
+                        throw err;
+                    }
                     if (retry < maxRetries) {
                         logger.warn(`[R插件][视频下载] HEAD请求失败，重试中... (${retry + 1}/${maxRetries})`);
                         await new Promise(resolve => setTimeout(resolve, retryDelay));
@@ -5125,6 +5308,9 @@ export class tools extends plugin {
                             writer.on("error", reject);
                         });
                     } catch (err) {
+                        if (this.isTlsCertificateHostError(err)) {
+                            throw err;
+                        }
                         if (retry < maxRetries) {
                             logger.warn(`[R插件][视频下载] part${partIndex} 下载失败，重试中... (${retry + 1}/${maxRetries}): ${err.message}`);
                             await new Promise(resolve => setTimeout(resolve, retryDelay));
@@ -5329,6 +5515,9 @@ export class tools extends plugin {
                     writer.on("error", reject);
                 });
             } catch (err) {
+                if (this.isTlsCertificateHostError(err)) {
+                    throw err;
+                }
                 if (retry < maxRetries) {
                     logger.warn(`[R插件][视频下载] 下载失败，重试中... (${retry + 1}/${maxRetries}): ${err.message}`);
                     await new Promise(resolve => setTimeout(resolve, retryDelay));
@@ -5406,27 +5595,32 @@ export class tools extends plugin {
         try {
             // 判断文件是否存在
             if (!fs.existsSync(path)) {
+                logger.warn(`[R插件][视频发送] 视频文件不存在: ${path}`);
                 await e.reply('视频不存在');
                 return false;
             }
             const stats = fs.statSync(path);
             const videoSize = Math.floor(stats.size / (1024 * 1024));
+            logger.info(`[R插件][视频发送] 准备发送视频: ${path}，大小 ${videoSize}MB`);
             // 正常发送视频
             if (videoSize > videoSizeLimit) {
                 e.reply(`当前视频大小：${videoSize}MB，\n大于设置的最大限制：${videoSizeLimit}MB，\n改为上传群文件`);
                 await this.uploadGroupFile(e, path); // uploadGroupFile 内部会处理删除
+                logger.info(`[R插件][视频发送] 视频已转为群文件上传: ${path}`);
                 return true;
             } else {
                 // 使用 replyWithRetry 包装视频发送，自动处理重发
                 const result = await replyWithRetry(e, Bot, segment.video(path));
                 // 发送成功后删除原文件
                 if (result && result.message_id) {
+                    logger.info(`[R插件][视频发送] 视频发送成功: ${path}，message_id=${result.message_id}`);
                     await checkAndRemoveFile(path);
                     // 同时清理可能生成的 retry 文件
                     const retryPath = path.replace(/(\.\w+)$/, '_retry$1');
                     await checkAndRemoveFile(retryPath);
                     return true;
                 } else {
+                    logger.warn(`[R插件][视频发送] 视频发送未返回 message_id，按失败处理: ${path}，result=${JSON.stringify(result)}`);
                     // 重发也失败了，清理文件
                     await checkAndRemoveFile(path);
                     const retryPath = path.replace(/(\.\w+)$/, '_retry$1');
