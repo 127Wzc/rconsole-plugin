@@ -1,0 +1,25 @@
+# 默认模型只作为仓库内兜底，实际运行时优先使用 GitHub Actions 注入的仓库变量。
+[config]
+model = "glm-5.2"
+custom_model_max_tokens = 1000000
+response_language = "zh-CN"
+duplicate_examples = true
+
+[pr_reviewer]
+persistent_comment = true
+final_update_message = true
+enable_help_text = false
+require_score_review = true
+require_tests_review = true
+require_security_review = true
+require_can_be_split_review = true
+num_max_findings = 8
+num_code_suggestions = 4
+inline_code_comments = true
+extra_instructions = "用中文审查。优先指出真实且可复现的问题，重点关注功能正确性、行为回归、安全性、测试缺口、边界条件和可维护性，并尽量给出可直接落地的修复建议。"
+
+[pr_code_suggestions]
+num_code_suggestions = 3
+dual_publishing_score_threshold = 8
+demand_code_suggestions_self_review = true
+code_suggestions_self_review_text = "我已逐条检查这些 AI 建议，只会采纳确认正确且符合项目实际情况的建议。"

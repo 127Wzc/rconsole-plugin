@@ -1,0 +1,82 @@
+name: PR Agent
+
+on:
+  pull_request_target:
+    types:
+      - opened
+      - reopened
+      - ready_for_review
+      - synchronize
+      - review_requested
+
+  issue_comment:
+    types:
+      - created
+      - edited
+
+jobs:
+  pr-agent:
+    if: >-
+      ${{
+        github.event.sender.type != 'Bot' &&
+        (
+          github.event_name == 'pull_request_target' ||
+          github.event.issue.pull_request
+        )
+      }}
+
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      checks: write
+
+    steps:
+      - name: Validate PR Agent configuration
+        env:
+          API_BASE: ${{ vars.PR_AGENT_OPENAI_API_BASE }}
+          API_KEY: ${{ secrets.PR_AGENT_OPENAI_API_KEY }}
+          MODEL: ${{ vars.PR_AGENT_MODEL }}
+        run: |
+          echo "repository=$GITHUB_REPOSITORY"
+          echo "event=$GITHUB_EVENT_NAME"
+          echo "base_repo=${{ github.event.pull_request.base.repo.full_name }}"
+          echo "head_repo=${{ github.event.pull_request.head.repo.full_name }}"
+          echo "head_fork=${{ github.event.pull_request.head.repo.fork }}"
+
+          if [ -z "$API_BASE" ]; then
+            echo "::error::PR_AGENT_OPENAI_API_BASE is unavailable"
+            exit 1
+          fi
+
+          if [ -z "$API_KEY" ]; then
+            echo "::error::PR_AGENT_OPENAI_API_KEY is unavailable"
+            exit 1
+          fi
+
+          echo "API base available=true"
+          echo "API key available=true"
+          echo "Model=${MODEL:-glm-5.2}"
+
+      - name: Run PR Agent
+        uses: the-pr-agent/pr-agent@v0.39.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+          config.model: ${{ vars.PR_AGENT_MODEL || 'glm-5.2' }}
+          config.fallback_models: ${{ vars.PR_AGENT_FALLBACK_MODELS || '["deepseek/deepseek-v4-flash"]' }}
+
+          OPENAI__API_BASE: ${{ vars.PR_AGENT_OPENAI_API_BASE }}
+          OPENAI__KEY: ${{ secrets.PR_AGENT_OPENAI_API_KEY }}
+
+          github_action_config.auto_review: "true"
+          github_action_config.auto_describe: "false"
+          github_action_config.auto_improve: "true"
+
+          github_action_config.pr_actions: >-
+            ["opened","reopened","ready_for_review","review_requested"]
+
+          github_action_config.handle_push_trigger: "true"
+          github_action_config.push_commands: '["/review"]'

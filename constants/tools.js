@@ -162,6 +162,23 @@ export const DY_EMOJI_LIST = "https://www.douyin.com/aweme/v1/web/emoji/list?dev
  */
 export const DY_TOUTIAO_INFO = "https://aweme.snssdk.com/aweme/v1/play/?video_id={}&ratio=1080p&line=0";
 
+/**
+ * DY 匿名 ttwid 注册端点（纯协议无 cookie 解析用，任何访客可得，非登录态）
+ * @type {string}
+ */
+export const DY_TTWID_REGISTER = "https://ttwid.bytedance.com/ttwid/union/register/";
+
+/**
+ * DY 视频分享页（SSR，内嵌 window._ROUTER_DATA），用于无 cookie 提取普通视频 play_addr
+ * @type {string}
+ */
+export const DY_SHARE_VIDEO_PAGE = "https://www.iesdouyin.com/share/video/{}/";
+
+/**
+ * DY note 分享页（SSR，内嵌 window._ROUTER_DATA），用于无 cookie 提取图文/动图内容
+ * @type {string}
+ */
+export const DY_SHARE_NOTE_PAGE = "https://www.iesdouyin.com/share/note/{}/";
 
 /**
  * DY 直播信息
@@ -186,6 +203,15 @@ export const TWITTER_TWEET_INFO = "https://api.twitter.com/2/tweets?ids={}";
  * @type {string}
  */
 export const XHS_REQ_LINK = "https://www.xiaohongshu.com/explore/";
+
+/**
+ * Instagram 解析接口（第三方临时接口）
+ * ⚠️ 该接口为第三方临时解析服务，非官方接口，随时可能下架或失效，届时需要更换或自建。
+ * 用法：在 url 参数中传入 instagram.com 的分享链接（图文 /p/、视频 /reel/ 均可）。
+ * 返回 data.noteType: "image" 走图片数组，"video" 走视频直链。
+ * @type {string}
+ */
+export const IG_TEMP_PARSE_API = "https://downloader-api.bhwa233.com/api/parse?url={}";
 
 /**
  * 通用解析的请求链接1（主用）
@@ -323,6 +349,42 @@ export const XHH_CONSOLE_LINK = "https://api.xiaoheihe.cn/game/console/get_game_
  * @type {string}
  */
 export const XHH_MOBILE_LINK = "https://api.xiaoheihe.cn/game/mobile/get_game_detail";
+
+/**
+ * 微信视频号 - 腾讯元宝解析接口
+ * 解析分享链接 https://weixin.qq.com/sph/xxx，返回 playable_url（含 token/eid）
+ * 需要腾讯元宝 Web 端 Cookie 鉴权，参考：https://github.com/ltaoo/wx_channels_download
+ * @type {string}
+ */
+export const WXCHANNEL_YUANBAO_PARSE = "https://yuanbao.tencent.com/api/weixin/get_parse_result";
+
+/**
+ * 微信视频号 - feed 详情接口
+ * 通过 token(generalToken) + eid(exportId) 获取视频地址、作者、互动数据等
+ * @type {string}
+ */
+export const WXCHANNEL_FEED_INFO = "https://channels.weixin.qq.com/finder-preview/api/feed/get_feed_info";
+
+/**
+ * 微信文章解析 - 腾讯元宝对话接口
+ * 通过元宝 Web 端对话接口让元宝抓取并总结微信文章（mp.weixin.qq.com）链接
+ * 与视频号解析共用同一个元宝 Cookie（weixinChannelYuanbaoCookie）
+ * 接口路径形如 /api/chat/{chatId}，{chatId} 由 conversation/create 接口创建
+ * payload 格式参考：https://github.com/chenwr727/yuanbao-free-api
+ * @type {string}
+ */
+export const YUANBAO_CHAT = "https://yuanbao.tencent.com/api/chat/";
+
+/**
+ * 微信文章解析 - 腾讯元宝会话管理接口
+ * 新建会话：POST /api/user/agent/conversation/create，返回 { id: chatId }
+ * 删除会话：POST /api/user/agent/conversation/v1/clear，body 含 conversationIds 数组
+ * 切换模型：POST /api/user/agent/conversation/updateModel，初始化会话模型
+ * @type {string}
+ */
+export const YUANBAO_CONVERSATION_CREATE = "https://yuanbao.tencent.com/api/user/agent/conversation/create";
+export const YUANBAO_CONVERSATION_CLEAR = "https://yuanbao.tencent.com/api/user/agent/conversation/v1/clear";
+export const YUANBAO_CONVERSATION_UPDATE_MODEL = "https://yuanbao.tencent.com/api/user/agent/conversation/updateModel";
 
 /**
  * TOOL_CALL 爬虫工具

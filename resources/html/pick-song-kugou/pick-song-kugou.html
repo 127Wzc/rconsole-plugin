@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>酷狗音乐 - 点歌列表</title>
+    <style>
+        :root {
+            --kugou-blue: #00A0E9;
+            --kugou-gradient: linear-gradient(135deg, #00C6FF 0%, #0072FF 100%);
+            --bg-color: #EEF4F9;
+            --card-bg: #FFFFFF;
+            --text-main: #2C3E50;
+            --text-sub: #7F8C8D;
+            --text-light: #BDC3C7;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        html, body {
+            width: 100%;
+            min-height: 100%;
+            background: var(--bg-color);
+            color: var(--text-main);
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+        }
+
+        /* 全屏铺满截图画布，去掉外边距/圆角卡片框 */
+        .music-card {
+            width: 100%;
+            min-height: 100vh;
+            background: var(--bg-color);
+            display: flex;
+            flex-direction: column;
+        }
+
+        .header {
+            background: var(--kugou-gradient);
+            padding: 36px 40px 28px;
+            color: #ffffff;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-shrink: 0;
+        }
+
+        .header-content h1 {
+            font-size: 34px;
+            font-weight: 700;
+            letter-spacing: 0.5px;
+        }
+
+        .header-content p {
+            font-size: 18px;
+            opacity: 0.9;
+            margin-top: 8px;
+        }
+
+        .brand-badge {
+            background: rgba(255, 255, 255, 0.2);
+            padding: 10px 18px;
+            border-radius: 24px;
+            font-size: 18px;
+            font-weight: 600;
+            letter-spacing: 1px;
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            white-space: nowrap;
+        }
+
+        .song-list {
+            list-style: none;
+            padding: 18px 28px 8px;
+            flex: 1;
+            background: var(--card-bg);
+        }
+
+        .song-item {
+            display: flex;
+            align-items: center;
+            padding: 16px 12px;
+            border-radius: 14px;
+            background: #fff;
+        }
+
+        .song-item + .song-item {
+            margin-top: 4px;
+            border-top: 1px solid #F0F4F8;
+            border-radius: 0;
+        }
+
+        .song-rank {
+            font-size: 24px;
+            font-weight: 800;
+            font-style: italic;
+            width: 42px;
+            color: var(--text-light);
+            text-align: center;
+            flex-shrink: 0;
+        }
+
+        .song-item:nth-child(1) .song-rank { color: #FF4757; font-size: 28px; }
+        .song-item:nth-child(2) .song-rank { color: #FFA502; font-size: 26px; }
+        .song-item:nth-child(3) .song-rank { color: var(--kugou-blue); font-size: 26px; }
+
+        .cover-wrapper {
+            width: 72px;
+            height: 72px;
+            margin-left: 8px;
+            margin-right: 18px;
+            flex-shrink: 0;
+        }
+
+        .song-cover {
+            width: 100%;
+            height: 100%;
+            border-radius: 12px;
+            object-fit: cover;
+            box-shadow: 0 4px 10px rgba(0, 0, 0, 0.08);
+            background-color: #E2E8F0;
+            display: block;
+        }
+
+        .cover-fallback {
+            width: 100%;
+            height: 100%;
+            border-radius: 12px;
+            background: var(--kugou-gradient);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #fff;
+            font-size: 22px;
+            font-weight: 700;
+            box-shadow: 0 4px 10px rgba(0, 0, 0, 0.08);
+        }
+
+        .song-info {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .song-title {
+            font-size: 26px;
+            font-weight: 600;
+            color: var(--text-main);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .song-artist {
+            font-size: 20px;
+            color: var(--text-sub);
+            margin-top: 6px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .song-action {
+            display: flex;
+            align-items: center;
+            margin-left: 16px;
+            flex-shrink: 0;
+        }
+
+        .song-duration {
+            font-size: 20px;
+            color: var(--text-sub);
+            font-variant-numeric: tabular-nums;
+            font-weight: 500;
+            min-width: 64px;
+            text-align: right;
+        }
+
+        .footer {
+            text-align: center;
+            padding: 22px 16px 28px;
+            font-size: 18px;
+            color: #95A5A6;
+            border-top: 1px solid #F0F4F8;
+            background-color: #FAFCFF;
+            flex-shrink: 0;
+        }
+
+        .footer span {
+            color: var(--kugou-blue);
+            font-weight: 600;
+        }
+    </style>
+</head>
+<body>
+    <div class="music-card">
+        <div class="header">
+            <div class="header-content">
+                <h1>点歌列表</h1>
+                <p>当前播放序列 · 共 {{ songCount || songData.length }} 首歌曲</p>
+            </div>
+            <div class="brand-badge">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="white">
+                    <path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/>
+                </svg>
+                酷狗音乐
+            </div>
+        </div>
+
+        <ul class="song-list">
+            {{each songData info key}}
+            <li class="song-item">
+                <span class="song-rank">{{ key + 1 }}</span>
+                <div class="cover-wrapper">
+                    {{ if info.cover && info.cover != 'def' }}
+                    <img class="song-cover" src="{{ info.cover }}" alt="">
+                    {{ else }}
+                    <div class="cover-fallback">KG</div>
+                    {{ /if }}
+                </div>
+                <div class="song-info">
+                    <div class="song-title">{{ info.songName || '未知歌曲' }}</div>
+                    <div class="song-artist">{{ info.singerName || '未知歌手' }}</div>
+                </div>
+                <div class="song-action">
+                    <span class="song-duration">{{ info.duration || '--:--' }}</span>
+                </div>
+            </li>
+            {{ /each }}
+        </ul>
+
+        <div class="footer">
+            <span>酷狗音乐</span> · Created By Yunzai-Bot & R-Plugin
+        </div>
+    </div>
+</body>
+</html>

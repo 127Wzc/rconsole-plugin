@@ -9,6 +9,35 @@ import PQueue from 'p-queue';
 import path from "path";
 import qrcode from "qrcode";
 import querystring from "querystring";
+import { Scraper } from '@the-convocation/twitter-scraper';
+import { cycleTLSFetch, cycleTLSExit } from '@the-convocation/twitter-scraper/cycletls';
+
+let activeTwitterCycleTlsParses = 0;
+let twitterCycleTlsExitPromise = null;
+const acquireTwitterCycleTls = async () => {
+    if (twitterCycleTlsExitPromise) {
+        await twitterCycleTlsExitPromise;
+    }
+    activeTwitterCycleTlsParses += 1;
+};
+const releaseTwitterCycleTls = async () => {
+    activeTwitterCycleTlsParses = Math.max(0, activeTwitterCycleTlsParses - 1);
+    if (activeTwitterCycleTlsParses !== 0) {
+        return;
+    }
+    if (!twitterCycleTlsExitPromise) {
+        twitterCycleTlsExitPromise = Promise.resolve()
+            .then(() => cycleTLSExit())
+            .catch(err => {
+                logger.warn(`[R插件][X] CycleTLS 退出失败: ${err.message}`);
+            })
+            .finally(() => {
+                twitterCycleTlsExitPromise = null;
+            });
+    }
+    await twitterCycleTlsExitPromise;
+};
+
 import puppeteer from "../../../lib/puppeteer/puppeteer.js";
 import { replyWithRetry } from "../utils/retry.js";
 import {
@@ -68,6 +97,7 @@ import BiliInfoModel from "../model/bili-info.js";
 import BiliComment from "../model/biliComment.js";
 import DouyinComment from "../model/douyinComment.js";
 import config from "../model/config.js";
+import KugouStatusModel from "../model/kugou-status.js";
 import NeteaseModel from "../model/netease.js";
 import NeteaseMusicInfo from '../model/neteaseMusicInfo.js';
 import * as aBogus from "../utils/a-bogus.cjs";
@@ -106,15 +136,19 @@ import { convertFlvToMp4, mergeVideoWithAudio } from "../utils/ffmpeg-util.js";
 import { checkAndRemoveFile, checkFileExists, deleteFolderRecursive, findFirstMp4File, getMediaFilesAndOthers, mkdirIfNotExists } from "../utils/file.js";
 import { buildBiliCommentRenderData, fetchBiliComments } from "../utils/bili-comment.js";
 import { buildDouyinCommentRenderData, fetchDouyinComments, getDouyinEmojiMap } from "../utils/douyin-comment.js";
+import { resolveDouyinVideoBySsr } from "../utils/douyin.js";
 import GeneralLinkAdapter from "../utils/general-link-adapter.js";
 import { contentEstimator } from "../utils/link-share-summary-util.js";
 import { llmRead } from "../utils/llm-util.js";
 import { getDS } from "../utils/mihoyo.js";
 import {
     checkKugouQrLogin,
+    buildKugouStatusCardData,
     buildKugouLoginCookie,
     createKugouQrCode,
     createKugouQrKey,
+    getKugouUserDetail,
+    getKugouUserVipDetail,
     normalizeKugouQrImage,
     resolveKugouMusicSource
 } from "../utils/kugou.js";
@@ -124,10 +158,13 @@ import { saveTDL, startTDL } from "../utils/tdl-util.js";
 import { genVerifyFp } from "../utils/tiktok.js";
 import Translate from "../utils/trans-strategy.js";
 import { mid2id, getWeiboData, getWeiboComments, getWeiboVoteImages } from "../utils/weibo.js";
+import { fetchVideoProfile, extractShareUrl } from "../utils/weixin-channel.js";
+import { summarizeLink as summarizeLinkByYuanbao, summarizeContent as summarizeContentByYuanbao } from "../utils/weixin-article-yuanbao.js";
 import { convertToSeconds, removeParams, ytbFormatTime } from "../utils/youtube.js";
 import { ytDlpGetDuration, ytDlpGetThumbnail, ytDlpGetThumbnailUrl, ytDlpGetTilt, ytDlpHelper } from "../utils/yt-dlp-util.js";
 import { textArrayToMakeForward, downloadImagesAndMakeForward, cleanupTempFiles, sendImagesInBatches, sendCustomMusicCard } from "../utils/yunzai-util.js";
 import { getApiParams, optimizeImageUrl } from "../utils/xiaoheihe.js";
+import { extractInstagramUrl, fetchInstagramMedia, normalizeInstagramMedia } from "../utils/instagram.js";
 
 /**
  * fetch重试函数
@@ -203,15 +240,20 @@ export class tools extends plugin {
                     fnc: "bili",
                 },
                 {
-                    reg: "https?:\\/\\/x.com\\/[0-9-a-zA-Z_]{1,20}\\/status\\/([0-9]*)",
+                    reg: "https?:\\/\\/(x|r|twitter)\\.com\\/[0-9-a-zA-Z_]{1,20}\\/status\\/([0-9]*)(\\?.*)?",
                     fnc: "twitter_x",
+                },
+                {
+                    reg: "https?:\\/\\/(www\\.)?instagram\\.com\\/(p|reel|reels)\\/",
+                    fnc: "instagram",
                 },
                 {
                     reg: "(acfun.cn|^ac[0-9]{8}$)",
                     fnc: "acfun",
                 },
                 {
-                    reg: "(xhslink.com|xiaohongshu.com)",
+                    // 兼容新版短链 xhslink.cn（旧版为 xhslink.com）
+                    reg: "(xhslink\\.(com|cn)|xiaohongshu\\.com)",
                     fnc: "xhs",
                 },
                 {
@@ -279,6 +321,10 @@ export class tools extends plugin {
                     fnc: "xiaoheihe"
                 },
                 {
+                    reg: "(weixin\\.qq\\.com/sph/)",
+                    fnc: "weixinChannel"
+                },
+                {
                     reg: "^#(网易云状态|rns|RNS|网易云云盘状态|rncs|RNCS)$",
                     fnc: "neteaseStatus",
                     permission: 'master',
@@ -287,6 +333,11 @@ export class tools extends plugin {
                     reg: "^#(rnq|RNQ|rncq|RNCQ)$",
                     fnc: 'netease_scan',
                     permission: 'master',
+                },
+                {
+                    reg: "^#(酷狗状态|rks|RKS)$",
+                    fnc: "kugouStatus",
+                    permission: "master",
                 },
                 {
                     reg: "^#(rkq|RKQ)$",
@@ -348,6 +399,7 @@ export class tools extends plugin {
         // 酷狗开源API配置
         this.kugouApiServer = this.toolsConfig.kugouApiServer;
         this.kugouCookie = this.toolsConfig.kugouCookie;
+        this.kugouAudioQuality = this.toolsConfig.kugouAudioQuality || 'viper_clear';
         // 加载是否自建服务器
         this.useLocalNeteaseAPI = this.toolsConfig.useLocalNeteaseAPI;
         // 加载自建服务器API
@@ -386,6 +438,8 @@ export class tools extends plugin {
         this.douyinDuration = this.toolsConfig.douyinDuration;
         // 加载抖音是否压缩
         this.douyinCompression = this.toolsConfig.douyinCompression;
+        // 加载抖音是否开启 SSR 免 Cookie 兜底
+        this.douyinEnableSsrBackup = this.toolsConfig.douyinEnableSsrBackup ?? false;
         // 加载抖音是否显示封面
         this.douyinDisplayCover = this.toolsConfig.douyinDisplayCover ?? true;
         // 加载抖音是否开启评论
@@ -425,12 +479,20 @@ export class tools extends plugin {
         this.globalImageLimit = this.toolsConfig.globalImageLimit;
         // 加载微博Cookie
         this.weiboCookie = this.toolsConfig.weiboCookie;
+        // 加载 X(Twitter) Cookie，格式：name=value; name2=value2
+        this.xCookie = this.toolsConfig.xCookie || '';
         // 是否开启微博评论
         this.weiboComments = this.toolsConfig.weiboComments ?? true;
         // 加载小黑盒Cookie
         this.xiaoheiheCookie = this.toolsConfig.xiaoheiheCookie;
         // 抖音视频下载源成功记录，仅在当前进程内用于优先尝试更快/更稳的域名
         this.douyinVideoHostStats = tools.douyinVideoHostStats ??= new Map();
+        // 加载视频号（腾讯元宝）Cookie —— 支持运行时通过 #设置视频号Cookie 命令更新
+        this.weixinChannelYuanbaoCookie = this.toolsConfig.weixinChannelYuanbaoCookie;
+        // 加载链接总结解析模式：general-通用（默认），yuanbao-元宝
+        this.linkSummaryResolveMode = this.toolsConfig.linkSummaryResolveMode || 'general';
+        // 元宝模式可选模型：hunyuan_gpt_175B_0404 / deep_seek_v3
+        this.linkSummaryYuanbaoModel = this.toolsConfig.linkSummaryYuanbaoModel || 'hunyuan_gpt_175B_0404';
     }
 
     // 翻译插件
@@ -553,8 +615,18 @@ export class tools extends plugin {
         if (_.isEmpty(douId)) {
             return false;
         }
+        // SSR 兜底仅面向普通视频，避免误伤直播、图集/动图、评论等原有流程。
+        const canUseSsrBackup = this.isDouyinSsrBackupEligible(douUrl);
         // 当前版本需要填入cookie
         if (_.isEmpty(this.douyinCookie)) {
+            if (await this.tryDouyinSsrBackup(e, douUrl, {
+                douId,
+                ttwid,
+                canUseSsrBackup,
+                reason: "未配置 Cookie",
+            })) {
+                return true;
+            }
             e.reply(`检测到没有Cookie，无法解析抖音${HELP_DOC}`);
             return;
         }
@@ -581,7 +653,7 @@ export class tools extends plugin {
             const { title, cover, user_count, stream_url } = item;
             const dySendContent = `${this.identifyPrefix}识别：抖音直播，${title}`;
             // 封面
-            const dyCover = cover.url_list?.at(-1) || cover.url_list?.[0];
+            const dyCover = cover.url_list?.[0] || cover.url_list?.at(-1);
             if (this.douyinDisplayCover && dyCover) {
                 await replyWithRetry(e, Bot, [segment.image(dyCover), dySendContent, `\n🏄‍♂️在线人数：${user_count}人正在观看`]);
             } else {
@@ -616,7 +688,7 @@ export class tools extends plugin {
                 const { title, cover, user_count_str, stream_url } = item;
                 const dySendContent = `${this.identifyPrefix}识别：抖音直播，${title}`;
                 // 封面
-                const dyCover = cover.url_list?.at(-1) || cover.url_list?.[0];
+                const dyCover = cover.url_list?.[0] || cover.url_list?.at(-1);
                 if (this.douyinDisplayCover && dyCover) {
                     await replyWithRetry(e, Bot, [segment.image(dyCover), dySendContent, `\n🏄‍♂️在线人数：${user_count_str}人正在观看`]);
                 } else {
@@ -630,6 +702,14 @@ export class tools extends plugin {
             // await saveJsonToFile(item);
             // 如果为null则退出
             if (item == null) {
+                if (await this.tryDouyinSsrBackup(e, douUrl, {
+                    douId,
+                    ttwid,
+                    canUseSsrBackup,
+                    reason: "主接口返回空数据",
+                })) {
+                    return true;
+                }
                 e.reply("R插件无法识别到当前抖音内容，请换一个试试！");
                 return;
             }
@@ -742,10 +822,189 @@ export class tools extends plugin {
 
             }
         } catch (err) {
+            if (await this.tryDouyinSsrBackup(e, douUrl, {
+                douId,
+                ttwid,
+                canUseSsrBackup,
+                reason: `主接口异常: ${err.message}`,
+            })) {
+                return true;
+            }
             logger.error(err);
             logger.mark(`Cookie 过期或者 Cookie 没有填写，请参考\n${HELP_DOC}\n尝试无效后可以到官方QQ群[575663150]提出 bug 等待解决`);
         }
         return true;
+    }
+
+    /**
+     * 判断当前链接是否允许走 SSR 免 Cookie 兜底。
+     * 目前放行普通视频和 note 图文/动图，直播和 slides 继续使用现有专用逻辑。
+     * @param douUrl
+     * @returns {boolean}
+     */
+    isDouyinSsrBackupEligible(douUrl = "") {
+        if (!this.douyinEnableSsrBackup) {
+            return false;
+        }
+
+        if (douUrl.includes("share/slides")) {
+            return false;
+        }
+
+        if (douUrl.includes("live.douyin.com") || /\/live\/\d+/.test(douUrl) || douUrl.includes("webcast.amemv.com")) {
+            return false;
+        }
+
+        return douUrl.includes("/video/") || douUrl.includes("/note/") || douUrl.includes("share/video/") || douUrl.includes("modal_id=");
+    }
+
+    /**
+     * 主接口不可用时，尝试走 SSR 分享页兜底。
+     * 兜底成功后只复用内容发送链路，不继续拉评论，避免引入新的 cookie 依赖。
+     * @param e
+     * @param douUrl
+     * @param options
+     * @returns {Promise<boolean>}
+     */
+    async tryDouyinSsrBackup(e, douUrl, options = {}) {
+        const {
+            douId = "",
+            ttwid = "",
+            canUseSsrBackup = false,
+            reason = "",
+        } = options;
+
+        if (!canUseSsrBackup) {
+            return false;
+        }
+
+        try {
+            const resolved = await resolveDouyinVideoBySsr(douUrl, {
+                initialTtwid: ttwid,
+                preferCompressed: this.douyinCompression,
+            });
+            logger.info(`[R插件][抖音SSR兜底] 已启用，原因: ${reason || "未知"}，类型: ${resolved.contentType}，canonical: ${resolved.canonicalUrl}`);
+            if (resolved.contentType === "image") {
+                await this.handleDouyinResolvedImage(e, resolved.aweme, douUrl);
+                return true;
+            }
+            await this.handleDouyinResolvedVideo(e, {
+                douId: resolved.awemeId || douId,
+                author: resolved.author || {},
+                authorNickname: resolved.authorNickname || "抖音用户",
+                desc: resolved.desc || "",
+                durationSeconds: resolved.durationSeconds || 0,
+                coverUrl: resolved.coverUrl || "",
+                videoUrl: resolved.videoUrl,
+                downloadHeaders: resolved.downloadHeaders,
+                commentHeaders: null,
+                enableComments: false,
+            });
+            return true;
+        } catch (error) {
+            logger.error(`[R插件][抖音SSR兜底] 失败: ${error.message}`);
+            return false;
+        }
+    }
+
+    /**
+     * 统一处理抖音普通视频的发送逻辑，让主接口结果和 SSR 兜底结果共用同一套下游行为。
+     * @param e
+     * @param options
+     * @returns {Promise<void>}
+     */
+    async handleDouyinResolvedVideo(e, options = {}) {
+        const {
+            douId = "",
+            author = {},
+            authorNickname = "抖音用户",
+            desc = "",
+            durationSeconds = 0,
+            coverUrl = "",
+            videoUrl = "",
+            downloadHeaders = null,
+            commentHeaders = null,
+            enableComments = false,
+        } = options;
+
+        let dySendContent = `${this.identifyPrefix}识别：抖音，${authorNickname}\n📝 简介：${desc}`;
+        if (durationSeconds >= this.douyinDuration) {
+            // 超过时长阈值时沿用老行为：只提示，不发送视频。
+            dySendContent += `\n
+                    ${DIVIDING_LINE.replace('{}', '限制说明')}\n当前视频时长约：${(durationSeconds / 60).toFixed(2).replace(/\.00$/, '')} 分钟，\n大于管理员设置的最大时长 ${(this.douyinDuration / 60).toFixed(2).replace(/\.00$/, '')} 分钟！`;
+            if (coverUrl) {
+                await replyWithRetry(e, Bot, [segment.image(coverUrl), dySendContent]);
+            } else {
+                e.reply(dySendContent);
+            }
+
+            if (enableComments && commentHeaders) {
+                await this.douyinComment(e, douId, commentHeaders, desc, coverUrl, author);
+            }
+            return;
+        }
+
+        if (this.douyinDisplayCover && coverUrl) {
+            await replyWithRetry(e, Bot, [segment.image(coverUrl), dySendContent]);
+        } else {
+            e.reply(dySendContent);
+        }
+
+        // downloadHeaders 允许 SSR 兜底链路把 Referer 等请求头透传到下载器。
+        const videoPath = await this.downloadVideo(videoUrl, false, downloadHeaders, this.videoDownloadConcurrency, 'douyin.mp4');
+        await this.sendVideoToUpload(e, videoPath);
+
+        if (enableComments && commentHeaders) {
+            await this.douyinComment(e, douId, commentHeaders, desc, coverUrl, author);
+        }
+    }
+
+    /**
+     * SSR 兜底拿到 image 类型时，复用现有图集/有声动图的发送链路。
+     * 这里主要承担 note 图文/有声动图兜底，不负责 share/slides 特例，也不继续请求评论接口。
+     * @param e
+     * @param item
+     * @param douUrl
+     * @returns {Promise<void>}
+     */
+    async handleDouyinResolvedImage(e, item, douUrl) {
+        const hasVideo = item.images?.some(img => img.video?.play_addr_h264?.uri || img.video?.play_addr?.uri);
+
+        if (hasVideo) {
+            const desc = item.desc || "无简介";
+            const authorNickname = item.author?.nickname || "未知作者";
+            const dyCover = item.video?.cover?.url_list?.[0] || item.images?.[0]?.url_list?.[0];
+            const dySendContent = `${this.identifyPrefix}识别：抖音动图，作者：${authorNickname}\n📝 简介：${desc}`;
+            if (this.douyinDisplayCover && dyCover) {
+                await replyWithRetry(e, Bot, [segment.image(dyCover), dySendContent]);
+            } else {
+                e.reply(dySendContent);
+            }
+
+            await this.processDouyinImageAlbum(e, item, douUrl, null, null);
+            return;
+        }
+
+        e.reply(`${this.identifyPrefix}识别：抖音, ${item.desc}`);
+
+        const imageUrls = (item.images || []).map(i => i.url_list[0]).filter(Boolean);
+        if (imageUrls.length === 0) {
+            return;
+        }
+
+        if (imageUrls.length > this.globalImageLimit) {
+            const remoteImageList = imageUrls.map(url => ({
+                message: segment.image(url),
+                nickname: this.e.sender.card || this.e.user_id,
+                user_id: this.e.user_id,
+            }));
+            await sendImagesInBatches(e, remoteImageList, this.imageBatchThreshold);
+        } else {
+            const images = imageUrls.map(url => segment.image(url));
+            await e.reply(images);
+        }
+
+        await this.resolveDouyinMusic(e, item, douUrl);
     }
 
     /**
@@ -1292,8 +1551,9 @@ export class tools extends plugin {
                 const contentText = item.content.map(part => part.text).join("");
                 const meta = [item.actionMeta, item.replyText, item.likeCountText ? `赞 ${item.likeCountText}` : ""].filter(Boolean).join("\n");
                 const message = [contentText, meta].filter(Boolean).join("\n");
+                const images = Array.isArray(item.images) && item.images.length > 0 ? item.images : item.image ? [item.image] : [];
                 return {
-                    message: item.image ? [{ type: "text", text: message }, segment.image(item.image)] : message,
+                    message: images.length > 0 ? [{ type: "text", text: message }, ...images.map(image => segment.image(image))] : message,
                     nickname: item.nickname || e.sender?.card || e.user_id,
                     user_id: e.user_id,
                 };
@@ -2220,7 +2480,7 @@ export class tools extends plugin {
         return true;
     }
 
-    // 使用现有api解析小蓝鸟
+    // 使用 twitter-scraper 解析 X（Twitter）
     async twitter_x(e) {
         // 切面判断是否需要解析
         if (!(await this.isEnableResolve(RESOLVE_CONTROLLER_NAME_ENUM.twitter_x))) {
@@ -2231,63 +2491,297 @@ export class tools extends plugin {
             e.reply("你没有权限使用此命令");
             return;
         }
-        // 配置参数及解析
-        const reg = /https:\/\/x\.com\/[\w]+\/status\/\d+(\/photo\/\d+)?/;
-        const twitterUrl = reg.exec(e.msg)[0];
-        // 检测
+
+        const reg = /https?:\/\/(x|r|twitter)\.com\/([\w]+)\/status\/(\d+)(\/photo\/\d+)?(\?[^\s]*)?/;
+        const match = reg.exec(e.msg);
+        if (!match) {
+            await e.reply("❌ 无法识别 X 链接");
+            return true;
+        }
+
+        const rawUrl = match[0].replace(/^http:\/\//, 'https://');
+        const twitterUrl = rawUrl.replace(/https:\/\/(r|twitter)\.com\//, 'https://x.com/');
+        const tweetId = match[3];
         const isOversea = await this.isOverseasServer();
-        if (!isOversea && !(await testProxy(this.proxyAddr, this.proxyPort))) {
-            e.reply("检测到没有梯子，无法解析小蓝鸟");
+
+        try {
+            await acquireTwitterCycleTls();
+            const twitterFetch = (input, init = {}) => {
+                const requestInit = { ...init };
+                if (!isOversea && this.myProxy) {
+                    requestInit.proxy = this.myProxy;
+                }
+                return cycleTLSFetch(input, requestInit);
+            };
+            const scraper = new Scraper({
+                fetch: twitterFetch,
+            });
+
+            if (!_.isEmpty(this.xCookie)) {
+                try {
+                    const cookies = this.xCookie
+                        .split(';')
+                        .map(c => c.trim())
+                        .filter(Boolean);
+                    await scraper.setCookies(cookies);
+                    logger.info(`[R插件][X] 已注入 ${cookies.length} 个 cookie`);
+                } catch (err) {
+                    logger.warn(`[R插件][X] Cookie 解析失败，继续匿名抓取: ${err.message}`);
+                }
+            }
+
+            let tweet = null;
+            try {
+                const maxAttempts = 3;
+                for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+                    try {
+                        tweet = await scraper.getTweet(tweetId);
+                        if (attempt > 1) {
+                            logger.info(`[R插件][X] 第 ${attempt} 次重试抓取成功`);
+                        }
+                        break;
+                    } catch (innerErr) {
+                        const errMsg = String(innerErr?.message || '');
+                        const isRetryable = errMsg.includes('TLS') || errMsg.includes('Handshake') || errMsg.includes('EOF') || errMsg.includes('Client network socket disconnected') || errMsg.includes('495');
+                        if (!isRetryable || attempt === maxAttempts) {
+                            throw innerErr;
+                        }
+                        logger.warn(`[R插件][X] 抓取失败，重试 ${attempt}/${maxAttempts - 1}: ${innerErr.message}`);
+                        await new Promise(resolve => setTimeout(resolve, 1500));
+                    }
+                }
+            } catch (err) {
+                logger.error(`[R插件][X] 抓取推文失败: ${err.message}`);
+                throw err;
+            }
+
+            if (!tweet) {
+                await e.reply("❌ 抓取失败，未获取到推文内容。可能需要配置 X Cookie");
+                return true;
+            }
+
+            logger.info(`[R插件][X] 抓取成功: ${twitterUrl} | photos=${tweet.photos?.length || 0} | videos=${tweet.videos?.length || 0}`);
+
+            const previewText = _.trim(tweet.text || '');
+            const buildPreviewMsg = async () => {
+                if (!previewText) return `${this.identifyPrefix}识别：小蓝鸟`;
+                let previewMsg = `${this.identifyPrefix}识别：小蓝鸟，${previewText}`;
+                try {
+                    const translatedText = await this.translateEngine.translate(previewText, '中');
+                    if (_.trim(translatedText) && _.trim(translatedText) !== '翻译失败') {
+                        previewMsg += `\n——————\n翻译：${_.trim(translatedText)}`;
+                    }
+                } catch (err) {
+                    logger.warn(`[R插件][X] 文案翻译失败: ${err.message}`);
+                }
+                return previewMsg;
+            };
+
+            const hasVideos = tweet.videos?.length > 0;
+            const hasPhotos = tweet.photos?.length > 0;
+
+            if (hasVideos || hasPhotos) {
+                await e.reply(await buildPreviewMsg());
+            }
+
+            if (hasVideos) {
+                const videosWithUrl = tweet.videos.filter(v => v.url);
+                if (videosWithUrl.length === 0 && !hasPhotos) {
+                    await e.reply("❌ 推文包含视频，但未解析到可下载地址");
+                    return true;
+                }
+                for (const video of videosWithUrl) {
+                    try {
+                        const videoPath = await this.downloadVideo(video.url, !isOversea, null, this.videoDownloadConcurrency, 'twitter.mp4');
+                        await e.reply(segment.video(videoPath));
+                    } catch (err) {
+                        logger.error(`[R插件][X] 视频下载失败: ${err.message}`);
+                        await e.reply('❌ 小蓝鸟视频下载失败，请稍后重试');
+                    }
+                }
+            }
+
+            if (hasPhotos) {
+                const imageUrls = tweet.photos.map(p => p.url).filter(Boolean);
+                const forwardNodes = [];
+                const downloadedImagePaths = [];
+
+                try {
+                    for (const url of imageUrls) {
+                        let imageSeg;
+                        if (isOversea) {
+                            imageSeg = segment.image(url);
+                        } else {
+                            const localPath = this.getCurDownloadPath(e);
+                            const xImgPath = await downloadImg({
+                                img: url,
+                                dir: localPath,
+                                isProxy: !isOversea,
+                                proxyInfo: {
+                                    proxyAddr: this.proxyAddr,
+                                    proxyPort: this.proxyPort
+                                },
+                                downloadMethod: this.biliDownloadMethod,
+                            });
+                            downloadedImagePaths.push(xImgPath);
+                            imageSeg = segment.image(xImgPath);
+                        }
+                        forwardNodes.push({
+                            message: imageSeg,
+                            nickname: e.sender.card || e.sender.nickname || String(e.user_id),
+                            user_id: e.user_id,
+                        });
+                    }
+
+                    await e.reply(await Bot.makeForwardMsg(forwardNodes));
+                } finally {
+                    for (const filePath of downloadedImagePaths) {
+                        try {
+                            await checkAndRemoveFile(filePath);
+                        } catch (cleanupErr) {
+                            logger.warn(`[R插件][X] 清理临时图片失败: ${cleanupErr.message}`);
+                        }
+                    }
+                }
+                return true;
+            }
+
+            if (hasVideos || hasPhotos) {
+                return true;
+            }
+
+            if (previewText) {
+                await e.reply(await buildPreviewMsg());
+                return true;
+            }
+
+            await e.reply("❌ 未解析到图片、视频或文本内容。可能需要配置 X Cookie");
+            return true;
+        } catch (err) {
+            logger.error(`[R插件][X] 解析失败: ${err.message}`);
+            const errMsg = String(err?.message || '');
+            let userHint = '❌ 小蓝鸟解析失败，请稍后重试';
+            if (errMsg.includes('TLS') || errMsg.includes('Handshake') || errMsg.includes('EOF') || errMsg.includes('Client network socket disconnected') || errMsg.includes('495')) {
+                userHint = '❌ 小蓝鸟连接不稳定，请稍后重试';
+            }
+            await e.reply(userHint);
+            return true;
+        } finally {
+            await releaseTwitterCycleTls();
+        }
+    }
+
+    // Instagram 解析（第三方临时接口，随时可能下架）
+    async instagram(e) {
+        // 切面判断是否需要解析
+        if (!(await this.isEnableResolve(RESOLVE_CONTROLLER_NAME_ENUM.instagram))) {
+            logger.info(`[R插件][全局解析控制] ${RESOLVE_CONTROLLER_NAME_ENUM.instagram} 已拦截`);
             return false;
         }
-        // 提取视频
-        let videoUrl = GENERAL_REQ_LINK.link.replace("{}", twitterUrl);
-        e.reply(`${this.identifyPrefix}识别：小蓝鸟学习版`);
-        const config = {
-            headers: {
-                'Accept': 'ext/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-                'Accept-Encoding': 'gzip, deflate',
-                'Accept-Language': 'zh-CN,zh;q=0.9',
-                'Host': '47.99.158.118',
-                'Proxy-Connection': 'keep-alive',
-                'Upgrade-Insecure-Requests': '1',
-                'User-Agent': COMMON_USER_AGENT,
-            },
-            timeout: 10000 // 设置超时时间
-        };
+        if (!(await this.isTrustUser(e.user_id))) {
+            e.reply("你没有权限使用此命令");
+            return;
+        }
+        // Instagram 在国内无法直连，统一按海外/代理处理
+        const isOversea = await this.isOverseasServer();
+        if (!isOversea && !(await testProxy(this.proxyAddr, this.proxyPort))) {
+            e.reply("检测到没有梯子，无法解析 Instagram");
+            return false;
+        }
 
-        let resp = await axios.get(videoUrl, config);
-        if (resp.data.data == null) {
-            videoUrl += '/photo/1';
-            logger.info(videoUrl);
-            resp = await axios.get(videoUrl, config);
+        const igUrl = extractInstagramUrl(e.msg);
+        if (!igUrl) {
+            await e.reply("❌ 无法识别 Instagram 链接");
+            return true;
         }
-        const url = resp.data.data?.url;
-        if (url && (url.endsWith(".jpg") || url.endsWith(".png"))) {
-            if (isOversea) {
-                // 海外直接下载
-                e.reply(segment.image(url));
-            } else {
-                // 非海外使用🪜下载
-                const localPath = this.getCurDownloadPath(e);
-                const xImgPath = await downloadImg({
-                    img: url,
-                    dir: localPath,
-                    isProxy: !isOversea,
-                    proxyInfo: {
-                        proxyAddr: this.proxyAddr,
-                        proxyPort: this.proxyPort
-                    },
-                    downloadMethod: this.biliDownloadMethod,
-                });
-                e.reply(segment.image(xImgPath));
+
+        try {
+            const raw = await fetchInstagramMedia(igUrl);
+            const media = normalizeInstagramMedia(raw);
+            if (!media) {
+                logger.error(`[R插件][Instagram] 解析失败，原始返回: ${JSON.stringify(raw).slice(0, 500)}`);
+                await e.reply("❌ Instagram 解析失败，第三方临时接口可能已下架或失效，请稍后重试");
+                return true;
             }
-        } else {
-            this.downloadVideo(url, !isOversea, null, this.videoDownloadConcurrency, 'twitter.mp4').then(videoPath => {
-                e.reply(segment.video(videoPath));
-            });
+
+            // 预览文案（只发一次）
+            let previewMsg = `${this.identifyPrefix}识别：Instagram`;
+            if (media.title) {
+                previewMsg += `，${media.title}`;
+                try {
+                    const translatedText = await this.translateEngine.translate(media.title, '中');
+                    if (_.trim(translatedText) && _.trim(translatedText) !== '翻译失败') {
+                        previewMsg += `\n——————\n翻译：${_.trim(translatedText)}`;
+                    }
+                } catch (err) {
+                    logger.warn(`[R插件][Instagram] 文案翻译失败: ${err.message}`);
+                }
+            }
+            await e.reply(previewMsg);
+
+            // 视频类型
+            if (media.noteType === "video" && media.videoUrl) {
+                try {
+                    const videoPath = await this.downloadVideo(media.videoUrl, !isOversea, null, this.videoDownloadConcurrency, 'instagram.mp4');
+                    await e.reply(segment.video(videoPath));
+                } catch (err) {
+                    logger.error(`[R插件][Instagram] 视频下载失败: ${err.message}`);
+                    await e.reply('❌ Instagram 视频下载失败，请稍后重试');
+                }
+                return true;
+            }
+
+            // 图文类型
+            if (media.noteType === "image" && media.images.length > 0) {
+                const downloadPath = this.getCurDownloadPath(e);
+                const downloadedImagePaths = [];
+                const forwardNodes = [];
+                try {
+                    for (const url of media.images) {
+                        let imageSeg;
+                        if (isOversea) {
+                            imageSeg = segment.image(url);
+                        } else {
+                            const imgPath = await downloadImg({
+                                img: url,
+                                dir: downloadPath,
+                                isProxy: !isOversea,
+                                proxyInfo: {
+                                    proxyAddr: this.proxyAddr,
+                                    proxyPort: this.proxyPort,
+                                },
+                                downloadMethod: this.biliDownloadMethod,
+                            });
+                            downloadedImagePaths.push(imgPath);
+                            imageSeg = segment.image(imgPath);
+                        }
+                        forwardNodes.push({
+                            message: imageSeg,
+                            nickname: e.sender.card || e.sender.nickname || String(e.user_id),
+                            user_id: e.user_id,
+                        });
+                    }
+                    await e.reply(await Bot.makeForwardMsg(forwardNodes));
+                } finally {
+                    for (const filePath of downloadedImagePaths) {
+                        try {
+                            await checkAndRemoveFile(filePath);
+                        } catch (cleanupErr) {
+                            logger.warn(`[R插件][Instagram] 清理临时图片失败: ${cleanupErr.message}`);
+                        }
+                    }
+                }
+                return true;
+            }
+
+            // 既无视频也无图片：预览文案已发送，无额外媒体可下发
+            await e.reply("❌ 未解析到图片或视频，第三方临时接口可能已下架或失效");
+            return true;
+        } catch (err) {
+            logger.error(`[R插件][Instagram] 解析失败: ${err.message}`);
+            await e.reply("❌ Instagram 解析失败，第三方临时接口可能已下架或失效，请稍后重试");
+            return true;
         }
-        return true;
     }
 
     // acfun解析
@@ -2363,72 +2857,116 @@ export class tools extends plugin {
             logger.info(`[R插件][全局解析控制] ${RESOLVE_CONTROLLER_NAME_ENUM.xhs} 已拦截`);
             return false;
         }
-        // 正则说明：匹配手机链接、匹配小程序、匹配PC链接
+        // 正则说明：匹配手机短链（xhslink.com / xhslink.cn）、小程序、PC 链接
+        // 注意：新版分享短链已切到 xhslink.cn，旧规则只写了 .com 会导致完全不进 xhs()
+        const msgText = String(e.msg ?? "").trim().replaceAll("amp;", "");
+        const cardData = e?.message?.[0]?.data;
         let msgUrl =
-            /(http:|https:)\/\/(xhslink|xiaohongshu).com\/[A-Za-z\d._?%&+\-=\/#@]*/.exec(
-                e.msg,
+            /(https?:)\/\/(xhslink\.(?:com|cn)|(?:www\.)?xiaohongshu\.com)\/[A-Za-z\d._?%&+\-=\/#@]*/i.exec(
+                msgText,
             )?.[0]
-            || /(http:|https:)\/\/www\.xiaohongshu\.com\/discovery\/item\/(\w+)/.exec(
-                e.message[0].data,
-            )?.[0]
-            || /(http:|https:)\/\/www\.xiaohongshu\.com\/explore\/(\w+)/.exec(
-                e.msg,
-            )?.[0]
-            || /(http:|https:)\/\/www\.xiaohongshu\.com\/discovery\/item\/(\w+)/.exec(
-                e.msg,
-            )?.[0];
+            || (typeof cardData === "string"
+                ? /(https?:)\/\/(xhslink\.(?:com|cn)|(?:www\.)?xiaohongshu\.com)\/[A-Za-z\d._?%&+\-=\/#@]*/i.exec(
+                    cardData,
+                )?.[0]
+                : undefined);
+
+        if (!msgUrl) {
+            logger.info("[R插件][xhs] 无法从消息中提取小红书链接");
+            return false;
+        }
+        logger.info(`[R插件][xhs] 识别到链接: ${msgUrl}`);
+
         // 注入ck
         XHS_NO_WATERMARK_HEADER.cookie = this.xiaohongshuCookie;
-        // 解析短号
+        // 解析短号 / 笔记参数
         let id, xsecToken, xsecSource;
         if (msgUrl.includes("xhslink")) {
-            await fetch(msgUrl, {
-                headers: XHS_NO_WATERMARK_HEADER,
-                redirect: "follow",
-            }).then(resp => {
-                const uri = decodeURIComponent(resp.url);
-                const parsedUrl = new URL(resp.url);
-                // 如果出现了网页验证uri:https://www.xiaohongshu.com/website-login/captcha?redirectPath=https://www.xiaohongshu.com/discovery/item/63c93ac3000000002203b28a?app_platform=android&app_version=8.23.1&author_share=1&ignoreEngage=true&share_from_user_hidden=true&type=normal&xhsshare=CopyLink&appuid=62c58b90000000000303dc54&apptime=1706149572&exSource=&verifyUuid=a5f32b62-453e-426b-98fe-2cfe0c16776d&verifyType=102&verifyBiz=461
-                const verify = uri.match(/\/item\/([0-9a-fA-F]+)/);
-                // 一般情况下不会出现问题就使用这个正则
-                id = /noteId=(\w+)/.exec(uri)?.[1] ?? verify?.[1];
-                // 提取 xsec_source 和 xsec_token 参数
+            try {
+                const resp = await fetch(msgUrl, {
+                    headers: XHS_NO_WATERMARK_HEADER,
+                    redirect: "follow",
+                });
+                const finalUrl = resp.url || msgUrl;
+                const uri = decodeURIComponent(finalUrl);
+                const parsedUrl = new URL(finalUrl);
+                logger.info(`[R插件][xhs] 短链跳转: ${finalUrl}`);
+                // captcha 场景下 noteId 常在 redirectPath 里：/item/{id} 或 noteId=
+                const verify = uri.match(/\/(?:item|explore)\/([0-9a-fA-F]+)/i);
+                id = /noteId=(\w+)/i.exec(uri)?.[1] ?? verify?.[1];
+                // 提取 xsec_source 和 xsec_token；短链有时会丢参，以后续校验为准
                 xsecSource = parsedUrl.searchParams.get("xsec_source") || "pc_feed";
                 xsecToken = parsedUrl.searchParams.get("xsec_token");
-            });
-        } else {
-            // 新版 xhs 这里必须是e.msg.trim()，因为要匹配参数：xsec_source 和 xsec_token
-            const xhsUrlMatch = e.msg.trim().replace("amp;", "").match(/(http|https)?:\/\/(www\.)?xiaohongshu\.com[^\s]+/);
-            if (!xhsUrlMatch) {
-                logger.info("[R插件][xhs] 无法匹配到链接");
-                return;
+                // 若跳转到 captcha，再从 redirectPath 里补一次参数
+                if ((!xsecToken || !id) && parsedUrl.pathname.includes("captcha")) {
+                    const redirectPath = parsedUrl.searchParams.get("redirectPath");
+                    if (redirectPath) {
+                        try {
+                            const redirectUrl = new URL(redirectPath, "https://www.xiaohongshu.com");
+                            id = id || /\/(?:item|explore)\/([0-9a-fA-F]+)/i.exec(redirectUrl.pathname)?.[1];
+                            xsecToken = xsecToken || redirectUrl.searchParams.get("xsec_token");
+                            xsecSource = redirectUrl.searchParams.get("xsec_source") || xsecSource || "pc_feed";
+                        } catch (err) {
+                            logger.warn(`[R插件][xhs] 解析 captcha redirectPath 失败: ${err.message}`);
+                        }
+                    }
+                }
+            } catch (err) {
+                logger.error(`[R插件][xhs] 短链跳转失败: ${err.message}`);
+                e.reply(`小红书短链解析失败，请稍后重试或换一条链接\n${HELP_DOC}`);
+                return false;
             }
-            const parsedUrl = new URL(xhsUrlMatch[0]);
-            id = /explore\/(\w+)/.exec(msgUrl)?.[1] || /discovery\/item\/(\w+)/.exec(msgUrl)?.[1];
-            // 提取 xsec_source 和 xsec_token 参数
+        } else {
+            // 新版 xhs 需要保留原链上的 xsec_source / xsec_token
+            let parsedUrl;
+            try {
+                parsedUrl = new URL(msgUrl);
+            } catch (err) {
+                logger.info(`[R插件][xhs] 链接解析失败: ${err.message}, url=${msgUrl}`);
+                return false;
+            }
+            id = /\/(?:explore|discovery\/item)\/([0-9a-fA-F]+)/i.exec(parsedUrl.pathname)?.[1];
             xsecSource = parsedUrl.searchParams.get("xsec_source") || "pc_feed";
             xsecToken = parsedUrl.searchParams.get("xsec_token");
         }
+
         const downloadPath = `${this.getCurDownloadPath(e)}`;
-        // 检测没有 cookie 则退出
+        // 缺参时记明确日志，避免“没反应也不报错”
         if (_.isEmpty(this.xiaohongshuCookie) || _.isEmpty(id) || _.isEmpty(xsecToken) || _.isEmpty(xsecSource)) {
+            logger.info(`[R插件][xhs] 参数不完整 cookie=${!_.isEmpty(this.xiaohongshuCookie)} id=${id || "-"} xsec_token=${xsecToken ? "yes" : "no"} xsec_source=${xsecSource || "-"}`);
             e.reply(`请检查以下问题：\n1. 是否填写 Cookie\n2. 链接是否有id\n3. 链接是否有 xsec_token 和 xsec_source\n${HELP_DOC}`);
-            return;
+            return false;
         }
+
+        logger.info(`[R插件][xhs] 请求笔记 id=${id}`);
         // 获取信息
-        const resp = await fetch(`${XHS_REQ_LINK}${id}?xsec_token=${xsecToken}&xsec_source=${xsecSource}`, {
+        const resp = await fetch(`${XHS_REQ_LINK}${id}?xsec_token=${encodeURIComponent(xsecToken)}&xsec_source=${encodeURIComponent(xsecSource)}`, {
             headers: XHS_NO_WATERMARK_HEADER,
         });
         // 从网页获取数据
         const xhsHtml = await resp.text();
         const reg = /window\.__INITIAL_STATE__=(.*?)<\/script>/;
-        const res = xhsHtml.match(reg)[1].replace(/undefined/g, "null");
-        const resJson = JSON.parse(res);
+        const matchedState = xhsHtml.match(reg);
+        if (!matchedState?.[1]) {
+            logger.warn(`[R插件][xhs] 页面未找到 __INITIAL_STATE__，status=${resp.status} htmlLen=${xhsHtml.length}`);
+            e.reply(`小红书页面数据解析失败，可能被验证或 Cookie 失效\n${HELP_DOC}`);
+            return false;
+        }
+        const res = matchedState[1].replace(/undefined/g, "null");
+        let resJson;
+        try {
+            resJson = JSON.parse(res);
+        } catch (err) {
+            logger.error(`[R插件][xhs] __INITIAL_STATE__ JSON 解析失败: ${err.message}`);
+            e.reply(`小红书数据解析失败，请稍后重试\n${HELP_DOC}`);
+            return false;
+        }
         // saveJsonToFile(resJson);
-        // 检测无效 Cookie
+        // 检测无效 Cookie / 笔记不可见
         if (resJson?.note === undefined || resJson?.note?.noteDetailMap?.[id]?.note === undefined) {
+            logger.info(`[R插件][xhs] noteDetailMap 缺失 id=${id} noteKeys=${Object.keys(resJson?.note?.noteDetailMap || {}).join(",") || "-"}`);
             e.reply(`检测到无效的小红书 Cookie，可以尝试清除缓存和cookie 或者 换一个浏览器进行获取\n${HELP_DOC}`);
-            return;
+            return false;
         }
         // 提取出数据
         const noteData = resJson?.note?.noteDetailMap?.[id]?.note;
@@ -2802,6 +3340,32 @@ export class tools extends plugin {
                 logger.error("执行酷狗扫码登录时出错:", error);
                 e.reply("执行酷狗扫码登录时发生错误，请稍后再试");
             }
+        }
+        return true;
+    }
+
+    async kugouStatus(e) {
+        if (_.isEmpty(this.kugouApiServer)) {
+            e.reply("未配置酷狗开源API地址，请先填写 tools.kugouApiServer");
+            return true;
+        }
+        if (_.isEmpty(this.kugouCookie)) {
+            e.reply("暂未登录酷狗，请发 #rkq 进行登陆绑定ck");
+            return true;
+        }
+
+        try {
+            const [detailResp, vipResp] = await Promise.all([
+                getKugouUserDetail(this.kugouApiServer, this.kugouCookie),
+                getKugouUserVipDetail(this.kugouApiServer, this.kugouCookie),
+            ]);
+            const cardData = buildKugouStatusCardData(detailResp, vipResp, this.kugouCookie);
+            const screenData = await new KugouStatusModel(e).getData(cardData);
+            const img = await puppeteer.screenshot("kugou-status", screenData);
+            e.reply(img, true);
+        } catch (error) {
+            logger.error("[R插件][kugouStatus] 获取酷狗状态时出错:", error);
+            e.reply("获取酷狗状态时出错，请稍后再试");
         }
         return true;
     }
@@ -3850,6 +4414,163 @@ export class tools extends plugin {
         return { title, album, artist };
     }
 
+    /**
+     * 链接总结 - 元宝模式
+     * 走腾讯元宝 Web 端对话接口让元宝抓取并总结链接
+     * 与视频号解析共用 weixinChannelYuanbaoCookie（同一套元宝 Cookie）
+     * 解析流程：新建会话 → 初始化模型 → 对话总结 → 删除会话（一次性）
+     *
+     * 超时策略：
+     *   1. 立即回复"正在解析"提示（避免用户等待无反馈）
+     *   2. SSE 流接收超时由 chatSummarize 内部控制（默认 120 秒）
+     *   3. 元宝失败时自动回退到通用模式（若已配置自配 AI），否则提示用户
+     *
+     * @param e 消息事件
+     * @param {string} summaryLink 待总结链接
+     * @param {string} name 识别平台名（如"微信文章"）
+     * @returns {Promise<boolean>}
+     */
+    async linkShareSummaryByYuanbao(e, summaryLink, name = '网页总结') {
+        // 校验 Cookie
+        const toolsConfig = config.getConfig("tools");
+        const cookie = toolsConfig.weixinChannelYuanbaoCookie || this.weixinChannelYuanbaoCookie;
+        if (!cookie) {
+            // 未配元宝 Cookie：若已配自配 AI，自动回退通用模式（与调用失败回退策略一致）
+            if (!_.isEmpty(this.aiApiKey)) {
+                e.reply(`${this.identifyPrefix}识别：${name}（元宝模式）未配置腾讯元宝 Cookie，正在自动回退到通用模式（${this.aiModel}）...`, true);
+                logger.mark(`[R插件][链接总结][元宝模式] 未配元宝 Cookie，回退到通用模式`);
+                return await this._generalLinkShareSummary(e, summaryLink, name);
+            }
+            // 既没元宝 Cookie 也没自配 AI，只能提示用户
+            e.reply(`${this.identifyPrefix}识别：${name}（元宝模式）\n⚠️ 未配置腾讯元宝 Cookie，请联系管理员私聊发送 #设置视频号Cookie 进行设置`);
+            return true;
+        }
+
+        // 立即回复"正在解析"提示，避免元宝对话较慢时用户无反馈
+        await e.reply(`${this.identifyPrefix}识别：${name}（元宝模式），正在调用腾讯元宝抓取并总结，预计 30-60 秒，请稍等...`, true);
+        logger.info(`[R插件][链接总结][元宝模式] 开始解析: ${summaryLink}`);
+
+        try {
+            const isWeixinArticle = /mp\.weixin\.qq\.com/i.test(summaryLink);
+            // 运行时读取模型，避免构造时缓存导致锅巴切换不生效
+            const yuanbaoModel = toolsConfig.linkSummaryYuanbaoModel
+                || this.linkSummaryYuanbaoModel
+                || 'hunyuan_gpt_175B_0404';
+            const yuanbaoOptions = {
+                timeout: 120000,
+                model: yuanbaoModel,
+            };
+            logger.info(`[R插件][链接总结][元宝模式] 使用模型: ${yuanbaoModel}`);
+            const summary = isWeixinArticle
+                ? await summarizeLinkByYuanbao(summaryLink, cookie, yuanbaoOptions)
+                : await summarizeContentByYuanbao(await llmRead(summaryLink), cookie, yuanbaoOptions);
+
+            // 元宝返回的总结文本可能较长，使用合并转发发送
+            // 头部标注「腾讯元宝」解析方式，让用户清楚是哪种模式产出的
+            const stats = estimateReadingTime(summary);
+            const titleMatch = summary.match(/(Title|标题)([:：])\s*(.*?)\n/)?.[3] || summary.match(/(Title|标题)([:：])\s*(.*)/)?.[3];
+            e.reply(`《${titleMatch || '未知标题'}》 预计阅读时间: ${stats.minutes} 分钟，总字数: ${stats.words}`);
+            const modelLabel = yuanbaoModel === 'deep_seek_v3' ? 'DeepSeek V3' : '混元 175B';
+            const Msg = await Bot.makeForwardMsg(textArrayToMakeForward(e, [
+                `「R插件 x 腾讯元宝（${modelLabel}）」联合为您总结内容：`,
+                summary,
+            ]));
+            await replyWithRetry(e, Bot, Msg);
+            logger.info(`[R插件][链接总结][元宝模式] 解析完成，总结长度: ${summary.length}`);
+            return true;
+        } catch (err) {
+            logger.error(`[R插件][链接总结][元宝模式] 解析失败: ${err.message}`);
+            // 自动回退到通用模式（若已配置自配 AI 接口）
+            if (!_.isEmpty(this.aiApiKey)) {
+                e.reply(`${this.identifyPrefix}识别：${name}（元宝模式）解析失败，正在自动回退到通用模式（${this.aiModel}）...`, true);
+                logger.mark(`[R插件][链接总结][元宝模式] 自动回退到通用模式`);
+                // 注意：直接调用 linkShareSummary 会再次触发元宝分流死循环，
+                // 所以这里手动复用内部通用总结逻辑（不经过 linkShareSummary 入口）
+                return await this._generalLinkShareSummary(e, summaryLink, name);
+            }
+            // 未配置自配 AI，无法回退，直接报错
+            e.reply(`${this.identifyPrefix}识别：${name}（元宝模式）解析失败：${err.message}\n\n未配置自配 AI 接口，无法自动回退。可尝试：\n1. 检查元宝 Cookie 是否失效（#设置视频号Cookie）\n2. 在锅巴配置中切换回通用模式`);
+            return true;
+        }
+    }
+
+    /**
+     * 链接总结 - 通用模式（内部复用方法，供元宝模式回退调用）
+     * 与 linkShareSummary 中的通用逻辑保持一致，但不经过入口分流，避免回退死循环
+     * @param e 消息事件
+     * @param {string} summaryLink 待总结链接
+     * @param {string} name 识别平台名
+     * @returns {Promise<boolean>}
+     */
+    async _generalLinkShareSummary(e, summaryLink, name = '网页总结') {
+        const builder = await new OpenaiBuilder()
+            .setBaseURL(this.aiBaseURL)
+            .setApiKey(this.aiApiKey)
+            .setModel(this.aiModel)
+            .setPrompt(SUMMARY_PROMPT);
+        await builder.build();
+
+        e.reply(`${this.identifyPrefix}识别：${name}（通用模式），正在为您总结，请稍等...`, true);
+
+        let messages = [{ role: "user", content: summaryLink }];
+
+        // 兜底策略：检测模型是否支持 tool_calls
+        if (!this.aiModel.includes("kimi") && !this.aiModel.includes("moonshot")) {
+            try {
+                const crawled_content = await llmRead(summaryLink);
+                messages = [
+                    { role: "user", content: `这是网页链接: ${summaryLink}` },
+                    { role: "assistant", content: `好的，我已经爬取了网页内容，内容如下：\n${crawled_content}` },
+                    { role: "user", content: "请根据以上内容进行总结。" }
+                ];
+                const response = await builder.chat(messages);
+                const { ans: kimiAns, model } = response;
+                const stats = estimateReadingTime(kimiAns);
+                const titleMatch = kimiAns.match(/(Title|标题)([:：])\s*(.*)/)?.[3];
+                e.reply(`《${titleMatch || '未知标题'}》 预计阅读时间: ${stats.minutes} 分钟，总字数: ${stats.words}`);
+                const Msg = await Bot.makeForwardMsg(textArrayToMakeForward(e, [`「R插件 x ${model}（通用模式）」联合为您总结内容：`, kimiAns]));
+                await replyWithRetry(e, Bot, Msg);
+            } catch (error) {
+                e.reply(`通用模式总结失败: ${error.message}`);
+            }
+            return true;
+        }
+
+        try {
+            for (let i = 0; i < 5; i++) {
+                const response = await builder.chat(messages, [CRAWL_TOOL]);
+                if (response.tool_calls) {
+                    const tool_calls = response.tool_calls;
+                    messages.push({ role: 'assistant', content: null, tool_calls });
+                    for (const tool_call of tool_calls) {
+                        if (tool_call.function.name === 'crawl') {
+                            try {
+                                const args = JSON.parse(tool_call.function.arguments);
+                                const crawled_content = await llmRead(args.url);
+                                messages.push({ role: 'tool', tool_call_id: tool_call.id, name: 'crawl', content: crawled_content });
+                            } catch (error) {
+                                messages.push({ role: 'tool', tool_call_id: tool_call.id, name: 'crawl', content: `爬取错误: ${error.message}` });
+                            }
+                        }
+                    }
+                } else {
+                    const { ans: kimiAns, model } = response;
+                    const stats = estimateReadingTime(kimiAns);
+                    const titleMatch = kimiAns.match(/(Title|标题)([:：])\s*(.*?)\n/)?.[3];
+                    e.reply(`《${titleMatch || '未知标题'}》 预计阅读时间: ${stats.minutes} 分钟，总字数: ${stats.words}`);
+                    const Msg = await Bot.makeForwardMsg(textArrayToMakeForward(e, [`「R插件 x ${model}（通用模式）」联合为您总结内容：`, kimiAns]));
+                    await replyWithRetry(e, Bot, Msg);
+                    return true;
+                }
+            }
+            e.reply("通用模式处理超出限制，请重试");
+        } catch (error) {
+            logger.error(`[R插件][链接总结][通用模式] 失败: ${error.message}`);
+            e.reply(`通用模式总结失败: ${error.message}`);
+        }
+        return true;
+    }
+
     // 链接总结
     async linkShareSummary(e) {
         if (!(await this.isEnableResolve(RESOLVE_CONTROLLER_NAME_ENUM.linkShareSummary))) {
@@ -3866,104 +4587,22 @@ export class tools extends plugin {
             ({ name, summaryLink } = contentEstimator(e.msg));
         }
 
+        // 元宝模式分流：配置为 yuanbao 时，整个链接总结优先走元宝
+        // 元宝模式不需要配置自配 AI（aiApiKey），故需在此分流前判断，避免被下面的 aiApiKey 校验拦截
+        // 注意：运行时读取 config，避免使用构造时缓存的 stale 值，让配置更新立即生效
+        const toolsConfig = config.getConfig("tools");
+        const linkSummaryResolveMode = toolsConfig.linkSummaryResolveMode || this.linkSummaryResolveMode || 'general';
+        if (linkSummaryResolveMode === 'yuanbao' && summaryLink) {
+            return await this.linkShareSummaryByYuanbao(e, summaryLink, name);
+        }
+
         // 判断是否有总结的条件
         if (_.isEmpty(this.aiApiKey)) {
             e.reply(`未配置 AI 接口，无法为您总结内容！${HELP_DOC}`);
             return false;
         }
 
-        const builder = await new OpenaiBuilder()
-            .setBaseURL(this.aiBaseURL)
-            .setApiKey(this.aiApiKey)
-            .setModel(this.aiModel)
-            .setPrompt(SUMMARY_PROMPT);
-
-        await builder.build();
-
-        e.reply(`${this.identifyPrefix}识别：${name}，正在为您总结，请稍等...`, true);
-
-        let messages = [{ role: "user", content: summaryLink }];
-
-        // 兜底策略：检测模型是否支持 tool_calls
-        if (!this.aiModel.includes("kimi") && !this.aiModel.includes("moonshot")) {
-            // 不支持 tool_calls 的模型，直接爬取内容并总结
-            try {
-                // 直接使用llmRead爬取链接内容
-                const crawled_content = await llmRead(summaryLink);
-                // 重新构造消息，将爬取到的内容直接放入对话历史
-                messages = [
-                    { role: "user", content: `这是网页链接: ${summaryLink}` },
-                    { role: "assistant", content: `好的，我已经爬取了网页内容，内容如下：\n${crawled_content}` },
-                    { role: "user", content: "请根据以上内容进行总结。" }
-                ];
-
-                // 调用kimi进行总结，此时不传递任何工具
-                const response = await builder.chat(messages); // 不传递 CRAWL_TOOL
-                const { ans: kimiAns, model } = response;
-                // 估算阅读时间并提取标题
-                const stats = estimateReadingTime(kimiAns);
-                const titleMatch = kimiAns.match(/(Title|标题)([:：])\s*(.*)/)?.[3];
-                e.reply(`《${titleMatch || '未知标题'}》 预计阅读时间: ${stats.minutes} 分钟，总字数: ${stats.words}`);
-                // 将总结内容格式化为合并转发消息
-                const Msg = await Bot.makeForwardMsg(textArrayToMakeForward(e, [`「R插件 x ${model}」联合为您总结内容：`, kimiAns]));
-                await replyWithRetry(e, Bot, Msg);
-            } catch (error) {
-                e.reply(`总结失败: ${error.message}`);
-            }
-            return false;
-        }
-
-        // 为了防止无限循环，设置一个最大循环次数
-        for (let i = 0; i < 5; i++) {
-            const response = await builder.chat(messages, [CRAWL_TOOL]);
-
-            // 如果Kimi返回了工具调用
-            if (response.tool_calls) {
-                const tool_calls = response.tool_calls;
-                messages.push({
-                    role: 'assistant',
-                    content: null,
-                    tool_calls: tool_calls,
-                });
-
-                // 遍历并处理每一个工具调用
-                for (const tool_call of tool_calls) {
-                    if (tool_call.function.name === 'crawl') {
-                        try {
-                            const args = JSON.parse(tool_call.function.arguments);
-                            const urlToCrawl = args.url;
-                            // 执行爬取操作
-                            const crawled_content = await llmRead(urlToCrawl);
-                            messages.push({
-                                role: 'tool',
-                                tool_call_id: tool_call.id,
-                                name: 'crawl',
-                                content: crawled_content,
-                            });
-                        } catch (error) {
-                            messages.push({
-                                role: 'tool',
-                                tool_call_id: tool_call.id,
-                                name: 'crawl',
-                                content: `爬取错误: ${error.message}`,
-                            });
-                        }
-                    }
-                }
-            } else {
-                // 如果没有工具调用，说明得到了最终的总结
-                const { ans: kimiAns, model } = response;
-                // 计算阅读时间
-                const stats = estimateReadingTime(kimiAns);
-                const titleMatch = kimiAns.match(/(Title|标题)([:：])\s*(.*?)\n/)?.[3];
-                e.reply(`《${titleMatch || '未知标题'}》 预计阅读时间: ${stats.minutes} 分钟，总字数: ${stats.words}`);
-                const Msg = await Bot.makeForwardMsg(textArrayToMakeForward(e, [`「R插件 x ${model}」联合为您总结内容：`, kimiAns]));
-                await replyWithRetry(e, Bot, Msg);
-                return false;
-            }
-        }
-        e.reply("处理超出限制，请重试");
-        return false;
+        return await this._generalLinkShareSummary(e, summaryLink, name);
     }
 
     // q q m u s i c 解析
@@ -4055,6 +4694,7 @@ export class tools extends plugin {
         const kugouResult = await resolveKugouMusicSource(this.kugouApiServer, {
             message: url,
             kugouCookie: this.kugouCookie,
+            quality: this.kugouAudioQuality,
         });
         for (const warning of kugouResult.warnings || []) {
             logger.warn(`[R插件][kugouMusic] ${warning}`);
@@ -4076,7 +4716,7 @@ export class tools extends plugin {
             cover: kugouResult.cover,
             songName: kugouResult.songName,
             singerName: kugouResult.singerName,
-            size: kugouResult.size,
+            size: kugouResult.qualityLabel || kugouResult.size,
             musicType: ["酷狗音乐"]
         });
         const img = await puppeteer.screenshot("neteaseMusicInfo", cardData);
@@ -5090,6 +5730,95 @@ export class tools extends plugin {
             /modal_id=\d+/.test(url);
     }
 
+    /**
+     * 微信视频号分享链接解析
+     * 支持 https://weixin.qq.com/sph/xxx 格式分享链接
+     * 实现参考 https://github.com/ltaoo/wx_channels_download
+     * 鉴权使用「腾讯元宝 Web 端 Cookie」，无需微信登录
+     * Cookie 获取方式：私聊管理员发送 #设置视频号Cookie <cookie>
+     * @param e
+     * @returns {Promise<boolean>}
+     */
+    async weixinChannel(e) {
+        // 切面判断是否需要解析
+        if (!(await this.isEnableResolve(RESOLVE_CONTROLLER_NAME_ENUM.weixinChannel))) {
+            logger.info(`[R插件][全局解析控制] ${RESOLVE_CONTROLLER_NAME_ENUM.weixinChannel} 已拦截`);
+            return false;
+        }
+
+        // 提取分享链接
+        const msg = e.msg === undefined ? (e.message?.[0]?.data || '') : e.msg;
+        const shareUrl = extractShareUrl(msg);
+        if (!shareUrl) {
+            logger.info(`[R插件][视频号] 未提取到 sph 分享链接: ${msg}`);
+            return false;
+        }
+
+        // 读取 Cookie（构造时从 yaml 加载，与 weibo/douyin 范式一致；通过 #设置视频号Cookie 更新后需重启插件生效）
+        const cookie = this.weixinChannelYuanbaoCookie;
+        if (!cookie) {
+            e.reply(`${this.identifyPrefix}识别：视频号\n⚠️ 未配置腾讯元宝 Cookie，请联系管理员私聊发送 #设置视频号Cookie 进行设置\n获取方法：浏览器登录 https://yuanbao.tencent.com 后 F12 → Network → 任意请求 → Request Headers → Cookie`);
+            return true;
+        }
+
+        logger.info(`[R插件][视频号] 开始解析: ${shareUrl}`);
+        try {
+            const result = await fetchVideoProfile(shareUrl, cookie);
+
+            // 拼装文字信息
+            const textLines = [`${this.identifyPrefix}识别：视频号，${result.author || '未知作者'}`];
+            if (result.desc) {
+                // 限制描述长度，避免过长
+                const desc = result.desc.length > 200 ? result.desc.slice(0, 200) + '...' : result.desc;
+                textLines.push(`📝 简介：${desc}`);
+            }
+            // 互动数据
+            // 注意：视频号接口 likeCountFmt 实为"点赞(红心)"数，favCountFmt 实为"喜欢/收藏"数，
+            // 与字段名含义相反，故 ❤️ 对应 like，👍 对应 fav（参考视频号 App 实际 UI）
+            const stats = result.stats;
+            const statsParts = [];
+            if (stats.like) statsParts.push(`❤️${stats.like}`);
+            if (stats.fav) statsParts.push(`👍${stats.fav}`);
+            if (stats.forward) statsParts.push(`🔄${stats.forward}`);
+            if (stats.comment) statsParts.push(`💬${stats.comment}`);
+            if (statsParts.length > 0) textLines.push(`📊 ${statsParts.join(' ')}`);
+
+            // 先发封面 + 文字信息
+            const messagesToSend = [];
+            if (result.cover) messagesToSend.push(segment.image(result.cover));
+            messagesToSend.push(textLines.join('\n'));
+            await e.reply(messagesToSend);
+
+            // 下载并发送视频（await 确保下载完成，与抖音范式一致）
+            if (result.video) {
+                try {
+                    // 视频号 CDN 不支持 HEAD 请求，强制单线程下载（直接 GET，跳过 HEAD 探测）
+                    const videoPath = await this.downloadVideo(result.video, false, null, 1, 'wxchannel.mp4');
+                    this.sendVideoToUpload(e, videoPath);
+                } catch (err) {
+                    logger.error(`[R插件][视频号] 视频下载失败: ${err.message}`);
+                    e.reply('视频号视频下载失败，可能视频链接已过期，请重新分享链接');
+                }
+            } else {
+                e.reply('未获取到视频地址，可能是图文动态或不支持的内容类型');
+                logger.warn(`[R插件][视频号] 未获取到视频地址，mediaType: ${result.mediaType}`);
+            }
+        } catch (err) {
+            logger.error(`[R插件][视频号] 解析失败: ${err.message}`);
+            // 针对常见错误给出友好提示
+            let hint = '视频号解析失败';
+            if (err.message.includes('wx_export_id') || err.message.includes('Cookie')) {
+                hint += '：腾讯元宝 Cookie 可能已失效，请联系管理员私聊发送 #设置视频号Cookie 更新';
+            } else if (err.message.includes('errCode')) {
+                hint += `：${err.message}`;
+            } else {
+                hint += `：${err.message}`;
+            }
+            e.reply(hint);
+        }
+        return true;
+    }
+
 
     /**
      * 格式化时间戳为用户友好的字符串
@@ -5249,17 +5978,35 @@ export class tools extends plugin {
         const { url, headers, userAgent, proxyOption, target, groupPath } = downloadVideoParams;
         const maxRetries = 3;
         const retryDelay = 1000;
+        const baseHeaders = headers ? { ...headers } : { "User-Agent": userAgent };
 
         try {
             // Step 1: 请求视频资源获取 Content-Length（带重试）
-            let headRes;
+            let contentLength = 0;
             for (let retry = 0; retry <= maxRetries; retry++) {
                 try {
-                    headRes = await axios.head(url, {
-                        headers: headers || { "User-Agent": userAgent },
+                    const headRes = await axios.head(url, {
+                        headers: baseHeaders,
                         ...proxyOption
                     });
-                    break;
+                    contentLength = Number(headRes.headers['content-length']) || 0;
+                    if (!contentLength) {
+                        const rangeRes = await axios.get(url, {
+                            headers: {
+                                ...baseHeaders,
+                                "Range": "bytes=0-1"
+                            },
+                            responseType: "arraybuffer",
+                            ...proxyOption
+                        });
+                        const contentRange = rangeRes.headers['content-range'] || "";
+                        const match = String(contentRange).match(/\/(\d+)$/);
+                        contentLength = Number(match?.[1]) || 0;
+                    }
+                    if (contentLength) {
+                        break;
+                    }
+                    throw new Error("无法获取视频大小");
                 } catch (err) {
                     if (this.isTlsCertificateHostError(err)) {
                         throw err;
@@ -5273,7 +6020,6 @@ export class tools extends plugin {
                 }
             }
 
-            const contentLength = headRes.headers['content-length'];
             if (!contentLength) {
                 throw new Error("无法获取视频大小");
             }
@@ -5288,7 +6034,7 @@ export class tools extends plugin {
                     try {
                         const partAxiosConfig = {
                             headers: {
-                                "User-Agent": userAgent,
+                                ...baseHeaders,
                                 "Range": `bytes=${start}-${end}`
                             },
                             responseType: "stream",

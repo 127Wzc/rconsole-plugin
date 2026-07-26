@@ -2,7 +2,9 @@ html,
 body {
     margin: 0;
     padding: 0;
-    width: 100%;
+    width: 760px;
+    transform: scale(1.5);
+    transform-origin: 0 0;
     background: #ffffff;
     color: #18191c;
     font-family: "PingFang SC", "Microsoft YaHei", Arial, sans-serif;
@@ -58,7 +60,7 @@ body {
     margin: 0;
     overflow: hidden;
     color: #18191c;
-    font-size: 15px;
+    font-size: 20px;
     font-weight: 500;
     line-height: 1.45;
     text-overflow: ellipsis;
@@ -68,7 +70,7 @@ body {
 .header-copy p {
     margin: 4px 0 0;
     color: #9499a0;
-    font-size: 12px;
+    font-size: 15px;
     line-height: 1.4;
 }
 
@@ -147,60 +149,67 @@ body {
 
 .nickname {
     max-width: 260px;
-    font-size: 14px;
+    font-size: 18px;
 }
 
 .level-badge {
     min-width: 0;
-    height: 13px;
-    padding: 0 3px;
+    height: 16px;
+    padding: 0 4px;
     border-radius: 2px;
     color: #ffffff;
-    font-size: 9px;
+    font-size: 11px;
     font-weight: 700;
-    line-height: 13px;
+    line-height: 16px;
     letter-spacing: 0;
 }
 
-.level-badge-1,
-.level-badge-2,
+.level-badge-0,
+.level-badge-1 {
+    background: #e8e8e8;
+}
+
+.level-badge-2 {
+    background: #8cd49c;
+}
+
 .level-badge-3 {
-    background: #6dc781;
+    background: #7cccec;
 }
 
 .level-badge-4 {
-    background: #48a6e8;
+    background: #fbbc8c;
 }
 
 .level-badge-5 {
-    background: #ff8c29;
+    background: #ec642c;
 }
 
 .level-badge-6 {
-    background: #ff6699;
+    background: #f34c4c;
 }
 
 .senior-flash {
     color: #ffffff;
-    font-size: 9px;
+    font-size: 11px;
 }
 
 .fan-medal {
     display: inline-flex;
-    height: 14px;
-    max-width: 92px;
+    height: 17px;
+    max-width: 112px;
     overflow: hidden;
     border: 1px solid var(--fan-medal-border, #ff6699);
     border-radius: 2px;
     color: #ffffff;
-    font-size: 10px;
-    line-height: 14px;
+    font-size: 12px;
+    line-height: 17px;
     font-weight: 500;
     vertical-align: 1px;
 }
 
 .fan-medal-name {
-    max-width: 64px;
+    max-width: 80px;
     overflow: hidden;
     padding: 0 3px;
     background: var(--fan-medal-bg, #ff6699);
@@ -218,21 +227,20 @@ body {
 }
 
 .up-badge {
-    height: 14px;
-    padding: 0 4px;
+    height: 17px;
+    padding: 0 5px;
     border-radius: 2px;
     background: #ff6699;
     color: #ffffff;
-    font-size: 10px;
-    line-height: 14px;
+    font-size: 12px;
+    line-height: 17px;
 }
 
 .meta {
     display: none;
 }
 
-.comment-decor,
-.index {
+.comment-decor {
     position: absolute;
     top: 21px;
     right: 0;
@@ -289,19 +297,12 @@ body {
     letter-spacing: 0;
 }
 
-.index {
-    min-width: 60px;
-    color: #c9ccd0;
-    font-size: 12px;
-    text-align: right;
-}
-
 .content {
     margin-top: 7px;
     padding-right: 10px;
     color: #18191c;
-    font-size: 15px;
-    line-height: 1.55;
+    font-size: 20px;
+    line-height: 1.65;
     word-break: break-word;
 }
 
@@ -322,7 +323,25 @@ body {
     vertical-align: -5px;
 }
 
+.rich-highlight {
+    color: #00aeec;
+}
+
+.pinned-badge {
+    display: inline-block;
+    margin-right: 7px;
+    padding: 0 6px;
+    border-radius: 2px;
+    background: #fff0f5;
+    color: #ff6699;
+    font-size: 15px;
+    line-height: 24px;
+    vertical-align: 2px;
+}
+
 .comment-image-wrap {
+    display: inline-block;
+    margin-right: 6px;
     margin-top: 9px;
     max-width: 260px;
     max-height: 220px;
@@ -364,15 +383,15 @@ body {
 
 .reply-nickname {
     max-width: 220px;
-    font-size: 13px;
-    line-height: 18px;
+    font-size: 18px;
+    line-height: 24px;
 }
 
 .reply-content {
     margin-top: 2px;
     color: #18191c;
-    font-size: 14px;
-    line-height: 1.55;
+    font-size: 20px;
+    line-height: 1.65;
     word-break: break-word;
 }
 
@@ -383,8 +402,8 @@ body {
     gap: 20px;
     margin-top: 8px;
     color: #9499a0;
-    font-size: 12px;
-    line-height: 18px;
+    font-size: 15px;
+    line-height: 22px;
 }
 
 .reply-meta {
@@ -395,6 +414,17 @@ body {
 .action-meta {
     flex: 0 0 auto;
     color: #9499a0;
+}
+
+.up-like-text {
+    display: inline-block;
+    margin-top: 8px;
+    padding: 2px 8px;
+    border-radius: 2px;
+    background: #f1f2f3;
+    color: #61666d;
+    font-size: 14px;
+    line-height: 20px;
 }
 
 .action {

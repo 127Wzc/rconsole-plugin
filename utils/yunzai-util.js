@@ -44,20 +44,26 @@ export async function sendMusicCard(e, platformType, musicId) {
  * @param musictitle 音乐标题
  * @param musicimage 音乐封面
  * @param musictype  卡片类型
+ * @param musiccontent 副标题（歌手等）
  */
-export async function sendCustomMusicCard(e, musicurl, musicaudio, musictitle, musicimage, musictype = 'custom') {
+export async function sendCustomMusicCard(e, musicurl, musicaudio, musictitle, musicimage, musictype = 'custom', musiccontent = '') {
+    const data = {
+        type: musictype,
+        url: musicurl,
+        audio: musicaudio,
+        title: musictitle,
+        image: musicimage,
+    };
+    // NapCat/go-cqhttp custom 卡支持 content 作为副标题
+    if (musiccontent) {
+        data.content = musiccontent;
+    }
     await e.bot.sendApi('send_group_msg', {
         group_id: e.group_id,
         message: [
             {
                 type: 'music',
-                data: {
-                    type: musictype,
-                    url: musicurl,
-                    audio: musicaudio,
-                    title: musictitle,
-                    image: musicimage
-                }
+                data,
             }
         ]
     });

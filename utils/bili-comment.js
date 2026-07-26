@@ -15,6 +15,15 @@ function normalizeRenderImageUrl(url = "") {
     return normalized.replace(/^http:\/\//i, "https://");
 }
 
+function getBiliCommentImages(content = {}) {
+    const pictures = Array.isArray(content?.pictures) ? content.pictures : [];
+    return [...new Set(
+        pictures
+            .map(item => normalizeRenderImageUrl(item?.img_src || ""))
+            .filter(Boolean)
+    )];
+}
+
 function formatInteractionCount(count = 0) {
     const num = Number(count) || 0;
     if (num >= 100000000) {
@@ -46,20 +55,67 @@ function normalizeCommentText(text = "") {
         .trim();
 }
 
-function normalizeCommentRichText(text = "", emotes = {}) {
-    const normalizedText = normalizeCommentText(text);
+function decodeBiliCommentText(text = "") {
+    return String(text).replace(/&amp;?/g, "&");
+}
+
+function pushBiliTextParts(richText, textPart = "") {
+    const lines = textPart.split("\n");
+    lines.forEach((line, lineIndex) => {
+        if (line) {
+            richText.push({ type: "text", text: line });
+        }
+        if (lineIndex < lines.length - 1) {
+            richText.push({ type: "line-break" });
+        }
+    });
+}
+
+function buildBiliHighlightEntries(content = {}) {
+    const atEntries = Object.keys(content?.at_name_to_mid || {})
+        .filter(name => name)
+        .map(name => decodeBiliCommentText(name))
+        .filter(name => name)
+        .map(name => ({
+            key: `@${name}`,
+            text: `@${name}`,
+        }));
+
+    const jumpEntries = Object.entries(content?.jump_url || {})
+        .map(([url, detail]) => {
+            const key = decodeBiliCommentText(url);
+            const title = String(detail?.title || "").trim();
+            return key && title ? { key, text: title } : null;
+        })
+        .filter(Boolean);
+
+    return [...jumpEntries, ...atEntries]
+        .sort((a, b) => b.key.length - a.key.length);
+}
+
+function getFullUrlLength(text = "", start = 0, minLength = 0) {
+    const fullUrl = text.slice(start).match(/^https?:\/\/[^\s]+/i)?.[0] || "";
+    return Math.max(minLength, fullUrl.length);
+}
+
+function normalizeCommentRichText(content = {}, emotes = {}) {
+    const rawText = typeof content === "object" ? content?.message : content;
+    const normalizedText = normalizeCommentText(decodeBiliCommentText(rawText));
     if (!normalizedText) {
         return [];
     }
 
     const richText = [];
-    const emoteEntries = Object.entries(emotes || {})
+    const hasInputEmotes = emotes && Object.keys(emotes).length > 0;
+    const contentEmotes = hasInputEmotes ? emotes : (typeof content === "object" ? content?.emote : {});
+    const emoteEntries = Object.entries(contentEmotes || {})
         .map(([key, value]) => ({
             key,
             url: normalizeRenderImageUrl(value?.url || value?.gif_url || value?.webp_url || value?.img_url || value?.image_url || value?.uri || "")
         }))
         .filter(item => item.key && item.url)
         .sort((a, b) => b.key.length - a.key.length);
+    const highlightEntries = buildBiliHighlightEntries(typeof content === "object" ? content : {});
 
     for (let index = 0; index < normalizedText.length;) {
         const matched = emoteEntries.find(item => normalizedText.startsWith(item.key, index));
@@ -69,11 +125,19 @@ function normalizeCommentRichText(text = "", emotes = {}) {
             continue;
         }
 
+        const highlighted = highlightEntries.find(item => normalizedText.startsWith(item.key, index));
+        if (highlighted) {
+            richText.push({ type: "highlight", text: highlighted.text });
+            index += getFullUrlLength(normalizedText, index, highlighted.key.length);
+            continue;
+        }
+
         const nextIndexList = emoteEntries
             .map(item => normalizedText.indexOf(item.key, index))
+            .concat(highlightEntries.map(item => normalizedText.indexOf(item.key, index)))
             .filter(nextIndex => nextIndex >= 0);
         const nextIndex = nextIndexList.length > 0 ? Math.min(...nextIndexList) : normalizedText.length;
-        richText.push({ type: "text", text: normalizedText.slice(index, nextIndex) });
+        pushBiliTextParts(richText, normalizedText.slice(index, nextIndex));
         index = nextIndex;
     }
     return richText;
@@ -217,20 +281,25 @@ function isBiliUpComment(item = {}, ownerMid = "", isSubReply = false) {
     return isSubReply && Boolean(item?.reply_control?.up_reply);
 }
 
+function isBiliUpLikedComment(item = {}) {
+    return Boolean(item?.up_action?.like || item?.reply_control?.up_like);
+}
+
+function isBiliPinnedComment(item = {}) {
+    return Boolean(item?.reply_control?.is_up_top || item?.reply_control?.is_top || item?.is_top);
+}
+
 function buildBiliMetaItems(item = {}) {
     return [
-        item.reply_control?.is_up_top ? "UP主置顶" : "",
         item.reply_control?.up_reply ? "UP主回复" : "",
         item.reply_control?.sub_reply_entry_text || "",
     ].filter(Boolean);
 }
 
 function normalizeBiliReplyComment(item = {}, options = {}) {
-    if (!item?.content?.message) {
-        return null;
-    }
-    const content = normalizeCommentRichText(item.content.message, item.content?.emote);
-    if (content.length === 0) {
+    const content = normalizeCommentRichText(item.content);
+    const images = getBiliCommentImages(item.content);
+    if (content.length === 0 && images.length === 0) {
         return null;
     }
     const formatCommentTime = typeof options.formatCommentTime === "function" ? options.formatCommentTime : (() => "");
@@ -238,26 +307,31 @@ function normalizeBiliReplyComment(item = {}, options = {}) {
     const level = Number(item.member?.level_info?.current_level);
     const time = item.ctime ? formatCommentTime(item.ctime) : "";
     const location = item.reply_control?.location?.replace(/^IP属地：?/, "") || "";
+    const isUp = isBiliUpComment(item, ownerMid, true);
     return {
         nickname: item.member?.uname || "B站用户",
         avatar: normalizeRenderImageUrl(item.member?.avatar || "") || getDefaultCommentAvatar(),
         nicknameColor: getBiliNicknameColor(item),
         content,
+        images,
+        image: images[0] || "",
         time,
         location,
         level: Number.isFinite(level) ? level : null,
         isSeniorMember: Boolean(item.member?.is_senior_member || Number(item.member?.senior?.status) > 0),
-        fanMedal: getBiliFanMedal(item),
-        isUp: isBiliUpComment(item, ownerMid, true),
+        fanMedal: isUp ? null : getBiliFanMedal(item),
+        isUp,
         actionMeta: [time, location].filter(Boolean).join(" · "),
+        upLikeText: isBiliUpLikedComment(item) ? "UP主觉得很赞" : "",
         likeCountText: formatInteractionCount(item.like || 0),
         replyText: "回复"
     };
 }
 
 function normalizeBiliComment(item = {}, options = {}) {
-    const content = normalizeCommentRichText(item?.content?.message, item?.content?.emote);
-    if (content.length === 0) {
+    const content = normalizeCommentRichText(item?.content);
+    const images = getBiliCommentImages(item?.content);
+    if (content.length === 0 && images.length === 0) {
         return null;
     }
     const formatCommentTime = typeof options.formatCommentTime === "function" ? options.formatCommentTime : (() => "");
@@ -268,22 +342,25 @@ function normalizeBiliComment(item = {}, options = {}) {
     const time = item.ctime ? formatCommentTime(item.ctime) : "";
     const location = item.reply_control?.location?.replace(/^IP属地：?/, "") || "";
     const replyCount = Number(item.rcount) || 0;
+    const isUp = isBiliUpComment(item, ownerMid);
     return {
         nickname: item.member?.uname || "B站用户",
         avatar: normalizeRenderImageUrl(item.member?.avatar || "") || getDefaultCommentAvatar(),
         nicknameColor: getBiliNicknameColor(item),
         content,
-        image: normalizeRenderImageUrl(item.content?.pictures?.[0]?.img_src || ""),
+        images,
+        image: images[0] || "",
         time,
         location,
         level: Number.isFinite(level) ? level : null,
         isSeniorMember: Boolean(item.member?.is_senior_member || Number(item.member?.senior?.status) > 0),
-        fanMedal: getBiliFanMedal(item),
-        isUp: isBiliUpComment(item, ownerMid),
+        fanMedal: isUp ? null : getBiliFanMedal(item),
+        isUp,
         decor: getBiliCommentDecor(item),
+        pinnedText: isBiliPinnedComment(item) ? "置顶" : "",
         metaItems: buildBiliMetaItems(item),
-        indexText: item.floor ? `#${item.floor}` : "",
         actionMeta: [time, location].filter(Boolean).join(" · "),
+        upLikeText: isBiliUpLikedComment(item) ? "UP主觉得很赞" : "",
         likeCountText: formatInteractionCount(item.like || 0),
         replyCountText: formatInteractionCount(replyCount),
         replyText: replyCount > 0 ? `回复 ${formatInteractionCount(replyCount)}` : "回复",

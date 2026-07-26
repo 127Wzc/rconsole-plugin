@@ -1,6 +1,6 @@
 import _ from "lodash";
 import path from "path";
-import { BILI_CDN_SELECT_LIST, BILI_DEFAULT_CDN_LIST, BILI_DOWNLOAD_METHOD, BILI_RESOLUTION_LIST, VIDEO_CODEC_LIST, YOUTUBE_GRAPHICS_LIST, NETEASECLOUD_QUALITY_LIST, DOUYIN_BGM_SEND_TYPE, DOUYIN_COMMENT_COUNT_LIST, DOUYIN_COMMENT_CHUNK_SIZE_LIST, BILI_COMMENT_COUNT_LIST, BILI_COMMENT_CHUNK_SIZE_LIST } from "./constants/constant.js";
+import { BILI_CDN_SELECT_LIST, BILI_DEFAULT_CDN_LIST, BILI_DOWNLOAD_METHOD, BILI_RESOLUTION_LIST, VIDEO_CODEC_LIST, YOUTUBE_GRAPHICS_LIST, NETEASECLOUD_QUALITY_LIST, KUGOU_QUALITY_LIST, SONG_REQUEST_PLATFORM_LIST, DOUYIN_BGM_SEND_TYPE, DOUYIN_COMMENT_COUNT_LIST, DOUYIN_COMMENT_CHUNK_SIZE_LIST, BILI_COMMENT_COUNT_LIST, BILI_COMMENT_CHUNK_SIZE_LIST, LINK_SUMMARY_RESOLVE_MODE_LIST, LINK_SUMMARY_YUANBAO_MODEL_LIST } from "./constants/constant.js";
 import { RESOLVE_CONTROLLER_NAME_ENUM } from "./constants/resolve.js";
 import model from "./model/config.js";
 
@@ -449,6 +449,14 @@ export function supportGuoba() {
                     required: false,
                 },
                 {
+                    field: "tools.douyinEnableSsrBackup",
+                    label: "是否开启 SSR 兜底",
+                    bottomHelpMessage:
+                        "默认关闭。开启后仅在普通抖音视频无 Cookie 或主接口失败时，尝试走 SSR 免 Cookie 兜底解析；不覆盖直播、图集/动图、评论接口",
+                    component: "Switch",
+                    required: false,
+                },
+                {
                     field: "tools.douyinDisplayCover",
                     label: "是否显示封面",
                     bottomHelpMessage: "默认显示，是否显示封面",
@@ -586,17 +594,27 @@ export function supportGuoba() {
                 },
                 {
                     field: "tools.useNeteaseSongRequest",
-                    label: "开启网易云点歌功能",
+                    label: "开启点歌功能",
                     bottomHelpMessage:
-                        "默认不开启，建议搭配自建网易云API使用，以获得最佳体验",
+                        "默认不开启；开启后可使用 #点歌 / #听 / #播放，平台由下方「点歌平台」决定",
                     component: "Switch",
                     required: false,
+                },
+                {
+                    field: "tools.songRequestPlatform",
+                    label: "点歌平台",
+                    bottomHelpMessage:
+                        "选择 #点歌 / #听 / #播放 使用的音乐平台；云盘相关命令始终走网易云，不受此项影响",
+                    component: "Select",
+                    componentProps: {
+                        options: SONG_REQUEST_PLATFORM_LIST,
+                    },
                 },
                 {
                     field: "tools.songRequestMaxList",
                     label: "点歌列表长度",
                     bottomHelpMessage:
-                        "网易云点歌选择列表长度默认10",
+                        "点歌选择列表长度，默认 10",
                     component: "InputNumber",
                     required: false,
                     componentProps: {
@@ -698,6 +716,41 @@ export function supportGuoba() {
                     },
                 },
                 {
+                    field: "tools.weixinChannelYuanbaoCookie",
+                    label: "视频号解析Cookie（腾讯元宝）",
+                    bottomHelpMessage:
+                        "解析微信视频号分享链接所需，浏览器登录 https://yuanbao.tencent.com 后 F12→Network→任意请求→Request Headers→Cookie 复制；也可私聊机器人发送 #设置视频号Cookie 进行设置（推荐私聊设置，更安全）",
+                    component: "Input",
+                    required: false,
+                    componentProps: {
+                        placeholder: "请输入腾讯元宝的Cookie",
+                    },
+                },
+                {
+                    field: "tools.linkSummaryResolveMode",
+                    label: "链接总结模式",
+                    bottomHelpMessage:
+                        "链接总结方式选择：\n" +
+                        "• 通用模式（默认）：浏览器抓取页面正文或内容 + 自配 AI（kimi/openai）总结，依赖 aiApiKey 配置\n" +
+                        "• 元宝模式：直接把链接发给腾讯元宝抓取并总结，与视频号共用上面的元宝 Cookie；需要 Playwright Chromium（用于生成 x-uskey 签名头），且部署服务器 IP 需尽量与元宝登录 IP 一致",
+                    component: "Select",
+                    componentProps: {
+                        options: LINK_SUMMARY_RESOLVE_MODE_LIST,
+                    },
+                },
+                {
+                    field: "tools.linkSummaryYuanbaoModel",
+                    label: "元宝总结模型",
+                    bottomHelpMessage:
+                        "仅在「链接总结模式=元宝模式」时生效：\n" +
+                        "• 混元 175B（默认）：hunyuan_gpt_175B_0404，元宝网页默认模型\n" +
+                        "• DeepSeek V3：deep_seek_v3，对应网页端切换 DeepSeek 时的 chatModelId",
+                    component: "Select",
+                    componentProps: {
+                        options: LINK_SUMMARY_YUANBAO_MODEL_LIST,
+                    },
+                },
+                {
                     field: "tools.kugouApiServer",
                     label: "酷狗API地址",
                     bottomHelpMessage:
@@ -707,6 +760,16 @@ export function supportGuoba() {
                     componentProps: {
                         placeholder: "请输入酷狗开源API地址",
                     },
+                },
+                {
+                    field: "tools.kugouAudioQuality",
+                    label: "酷狗解析音质",
+                    bottomHelpMessage:
+                        "酷狗歌曲解析优先选择的音质，若目标歌曲不支持则自动降级",
+                    component: "Select",
+                    componentProps: {
+                        options: KUGOU_QUALITY_LIST,
+                    }
                 },
                 {
                     field: "tools.kugouCookie",
