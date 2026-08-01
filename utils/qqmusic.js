@@ -289,6 +289,56 @@ export async function searchQqMusic(keyword = "", { cookie = "", limit = 10 } = 
 }
 
 /**
+ * 按 songmid 查询歌曲详情（标题/歌手/专辑封面）
+ * 分享链接/卡片解析拿不到封面时补全用；失败返回空对象，不影响主流程
+ * @param {string} songMid
+ * @param {object} [options]
+ * @returns {Promise<{ title: string, singer: string, cover: string }>}
+ */
+export async function fetchQqSongDetail(songMid = "", options = {}) {
+    if (!songMid) {
+        return { title: "", singer: "", cover: "" };
+    }
+    try {
+        const url = `https://c.y.qq.com/v8/fcg-bin/fcg_play_single_song.fcg?songmid=${encodeURIComponent(songMid)}&format=json`;
+        const response = await axios.get(url, {
+            headers: {
+                "User-Agent": UA,
+                Referer: "https://y.qq.com/",
+                ...(options.cookie ? { Cookie: options.cookie } : {}),
+            },
+            timeout: 15000,
+            validateStatus: () => true,
+        });
+        if (response.status >= 400) {
+            return { title: "", singer: "", cover: "" };
+        }
+        // 接口可能带 JSONP 前缀，去掉后解析
+        const text = typeof response.data === "string"
+            ? response.data.replace(/^[^(]*\(|\);?\s*$/g, "")
+            : response.data;
+        const body = typeof text === "string" ? JSON.parse(text) : text;
+        const song = body?.data?.[0] || {};
+        const album = song?.album || {};
+        const pmid = album.pmid || album.mid || "";
+        return {
+            title: song?.title || "",
+            singer: Array.isArray(song?.singer)
+                ? song.singer.map((item) => item?.name || "").filter(Boolean).join(" / ")
+                : "",
+            cover: pmid
+                ? normalizeQqImage(`https://y.gtimg.cn/music/photo_new/T002R300x300M000${pmid}.jpg`)
+                : "",
+        };
+    } catch (error) {
+        if (typeof logger !== "undefined") {
+            logger.debug?.(`[qqmusic] 歌曲详情获取失败: ${error.message}`);
+        }
+        return { title: "", singer: "", cover: "" };
+    }
+}
+
+/**
  * 拼接 CDN 直链（优先 xcdnurl，其次 purl/wifiurl，相对路径用 sip 前缀补全）
  * @param {object} info midurlinfo[0]
  * @param {string[]} sip
@@ -671,12 +721,14 @@ export async function resolveQqShareLink(url = "", { cookie = "", quality = "" }
     }
 
     const picked = await pickQqPlayUrl(songMid, { mediaMid, cookie, quality });
+    // 分享链接/卡片解析路径补全歌曲详情（标题/歌手/专辑封面）；失败不影响取流
+    const detail = await fetchQqSongDetail(songMid, { cookie });
     return {
         mid: songMid,
         mediaMid,
-        title: "",
-        singer: "",
-        cover: "def",
+        title: detail.title || "",
+        singer: detail.singer || "",
+        cover: detail.cover || "def",
         url: picked.url,
         result: picked.result,
         filename: picked.filename,
