@@ -40,7 +40,7 @@ biliCommentChunkSize: 10 # 哔哩哔哩评论单张截图展示数量，默认10
 
 useLocalNeteaseAPI: false # 是否使用网易云解析自建API
 useNeteaseSongRequest: false # 是否开启点歌功能（#点歌/#听/#播放）
-songRequestPlatform: netease # 点歌平台：netease-网易云（默认），kugou-酷狗；仅影响 #点歌/#听/#播放，云盘仍走网易云
+songRequestPlatform: netease # 点歌平台：netease-网易云（默认），kugou-酷狗（需配置 kugouApiServer），qq-QQ音乐（需配置 qqMusicCookie，本地直连不依赖服务器）；仅影响 #点歌/#听/#播放，云盘仍走网易云
 isSendVocal: true # 是否开启发送群语音
 songRequestMaxList: 10 # 点歌请求最大列表数
 neteaseCookie: '' # 网易云ck
@@ -72,6 +72,8 @@ xiaohongshuCookie: '' # 2024-8-2后反馈必须使用ck，不然无法解析
 kugouApiServer: '' # 酷狗开源API服务地址，参考 KuGouMusicApi 默认端口
 kugouAudioQuality: viper_clear # 酷狗解析优先音质：viper_clear=Hi-Res, flac=无损FLAC, 320=高品320K, 128=普通128K
 kugouCookie: '' # 酷狗开源API搜索时使用的cookie，文档示例：token=xxx;userid=xxx;dfid=xxx
+qqMusicCookie: '' # QQ音乐Cookie，浏览器登录 https://y.qq.com 后 F12→Network→任意请求→Request Headers→Cookie 复制；本地直连 musics.fcg 搜索/取流用，不依赖服务器
+qqMusicAudioQuality: auto # QQ音乐解析优先音质：auto=自动（默认，低码率OGG→128K→320K→M4A→试听），standard=标准OGG，128k=128K，320k=320K，m4a=M4A，trial=仅试听；目标歌曲不支持时自动降级
 
 weiboCookie: '' # 微博Cookie，格式：_T_WM=xxx; WEIBOCN_FROM=xxx; MLOGIN=xxx; XSRF-TOKEN=xxx; M_WEIBOCN_PARAMS=xxx
 weiboComments: true # 是否显示微博评论，默认开启

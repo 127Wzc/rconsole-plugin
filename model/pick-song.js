@@ -8,16 +8,19 @@ export default class PickSongList extends Base {
 
     /** 生成点歌列表图片 */
     async getData (songData = [], platform = 'netease') {
-        // 酷狗使用独立浅色列表模板，网易云保持原深色模板
+        // 酷狗使用独立浅色列表模板，网易云/QQ音乐保持原深色模板
         this.model = platform === 'kugou' ? 'pick-song-kugou' : 'pick-song'
         const list = Array.isArray(songData) ? songData : []
+        const platformLabel = platform === 'kugou' ? '酷狗音乐'
+            : platform === 'qq' ? 'QQ音乐'
+                : '网易云音乐'
         return {
             ...this.screenData,
             saveId: this.model,
             songData: list,
             songCount: list.length,
             platform,
-            platformLabel: platform === 'kugou' ? '酷狗音乐' : '网易云音乐',
+            platformLabel,
         }
     }
 }

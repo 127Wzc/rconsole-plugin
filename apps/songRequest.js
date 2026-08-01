@@ -89,6 +89,8 @@ export class songRequest extends plugin {
         this.kugouApiServer = this.toolsConfig.kugouApiServer || "";
         this.kugouCookie = this.toolsConfig.kugouCookie || "";
         this.kugouAudioQuality = this.toolsConfig.kugouAudioQuality || "flac";
+        this.qqMusicCookie = this.toolsConfig.qqMusicCookie || "";
+        this.qqMusicAudioQuality = this.toolsConfig.qqMusicAudioQuality || "auto";
     }
 
     /**
@@ -102,6 +104,12 @@ export class songRequest extends plugin {
                 apiServer: this.kugouApiServer,
                 cookie: this.kugouCookie,
                 quality: this.kugouAudioQuality,
+            });
+        }
+        if (platformId === "qq") {
+            return getMusicPlatform("qq", {
+                cookie: this.qqMusicCookie,
+                quality: this.qqMusicAudioQuality,
             });
         }
         // 默认 / 网易云
@@ -183,6 +191,10 @@ export class songRequest extends plugin {
             if (platformId === 'kugou' && !this.kugouApiServer) {
                 e.reply('未配置酷狗 API 地址，请先在锅巴 / tools.yaml 填写 kugouApiServer');
                 return true;
+            }
+
+            if (platformId === 'qq' && !this.qqMusicCookie) {
+                e.reply('未配置 QQ 音乐 Cookie（tools.qqMusicCookie），搜索结果可能受限，可在锅巴/浏览器登录 https://y.qq.com 后复制');
             }
 
             try {
@@ -300,6 +312,10 @@ export class songRequest extends plugin {
             return true;
         }
 
+        if (platformId === 'qq' && !this.qqMusicCookie) {
+            e.reply('未配置 QQ 音乐 Cookie（tools.qqMusicCookie），搜索结果可能受限，可在锅巴/浏览器登录 https://y.qq.com 后复制');
+        }
+
         try {
             const adapter = await this.createPlatformAdapter(platformId);
             if (songType === '2' && adapter.supportsContentType && !adapter.supportsContentType(songType)) {
@@ -350,6 +366,11 @@ export class songRequest extends plugin {
                     cloudCookie,
                     isCloudSong,
                     quality: this.neteaseCloudAudioQuality,
+                });
+            } else if (platformId === 'qq') {
+                playResult = await adapter.resolve(song, {
+                    cookie: this.qqMusicCookie,
+                    quality: this.qqMusicAudioQuality,
                 });
             } else {
                 playResult = await adapter.resolve(song, {

@@ -296,6 +296,15 @@ export const KUGOU_QUALITY_LIST = Object.freeze([
     { label: '普通 128K', value: '128' },
 ]);
 
+export const QQ_MUSIC_QUALITY_LIST = Object.freeze([
+    { label: '自动（默认候选顺序）', value: 'auto' },
+    { label: '标准 OGG（低码率）', value: 'standard' },
+    { label: '128K MP3', value: '128k' },
+    { label: '320K MP3', value: '320k' },
+    { label: 'M4A', value: 'm4a' },
+    { label: '仅试听片段', value: 'trial' },
+]);
+
 /**
  * 点歌平台选项（适配器注册 key）
  * 新增平台时同步 utils/music-platform 与锅巴下拉
@@ -303,6 +312,7 @@ export const KUGOU_QUALITY_LIST = Object.freeze([
 export const SONG_REQUEST_PLATFORM_LIST = Object.freeze([
     { label: '网易云音乐', value: 'netease' },
     { label: '酷狗音乐', value: 'kugou' },
+    { label: 'QQ音乐', value: 'qq' },
 ]);
 
 export const LINK_SUMMARY_RESOLVE_MODE_LIST = Object.freeze([
