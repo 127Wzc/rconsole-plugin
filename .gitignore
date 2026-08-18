@@ -31,3 +31,5 @@ CLAUDE.md
 .vscode
 AGENTS.md
 git-commit-message.md
+.reasonix
+sftp.json

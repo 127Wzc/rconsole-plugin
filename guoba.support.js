@@ -1,6 +1,6 @@
 import _ from "lodash";
 import path from "path";
-import { BILI_CDN_SELECT_LIST, BILI_DEFAULT_CDN_LIST, BILI_DOWNLOAD_METHOD, BILI_RESOLUTION_LIST, VIDEO_CODEC_LIST, YOUTUBE_GRAPHICS_LIST, NETEASECLOUD_QUALITY_LIST, KUGOU_QUALITY_LIST, SONG_REQUEST_PLATFORM_LIST, DOUYIN_BGM_SEND_TYPE, DOUYIN_COMMENT_COUNT_LIST, DOUYIN_COMMENT_CHUNK_SIZE_LIST, BILI_COMMENT_COUNT_LIST, BILI_COMMENT_CHUNK_SIZE_LIST, LINK_SUMMARY_RESOLVE_MODE_LIST, LINK_SUMMARY_YUANBAO_MODEL_LIST } from "./constants/constant.js";
+import { BILI_CDN_SELECT_LIST, BILI_DEFAULT_CDN_LIST, BILI_DOWNLOAD_METHOD, BILI_RESOLUTION_LIST, VIDEO_CODEC_LIST, YOUTUBE_GRAPHICS_LIST, NETEASECLOUD_QUALITY_LIST, KUGOU_QUALITY_LIST, QQ_MUSIC_QUALITY_LIST, SONG_REQUEST_PLATFORM_LIST, DOUYIN_BGM_SEND_TYPE, DOUYIN_COMMENT_COUNT_LIST, DOUYIN_COMMENT_CHUNK_SIZE_LIST, BILI_COMMENT_COUNT_LIST, BILI_COMMENT_CHUNK_SIZE_LIST, LINK_SUMMARY_RESOLVE_MODE_LIST, LINK_SUMMARY_YUANBAO_MODEL_LIST } from "./constants/constant.js";
 import { RESOLVE_CONTROLLER_NAME_ENUM } from "./constants/resolve.js";
 import model from "./model/config.js";
 
@@ -781,6 +781,27 @@ export function supportGuoba() {
                     componentProps: {
                         placeholder: "请输入酷狗搜索Cookie",
                     },
+                },
+                {
+                    field: "tools.qqMusicCookie",
+                    label: "QQ音乐Cookie",
+                    bottomHelpMessage:
+                        "浏览器登录 https://y.qq.com 后 F12→Network→任意请求→Request Headers→Cookie 复制；本地直连 musics.fcg 搜索/取流用，不依赖服务器",
+                    component: "Input",
+                    required: false,
+                    componentProps: {
+                        placeholder: "请输入QQ音乐Cookie",
+                    },
+                },
+                {
+                    field: "tools.qqMusicAudioQuality",
+                    label: "QQ音乐解析音质",
+                    bottomHelpMessage:
+                        "QQ音乐歌曲解析优先选择的音质，若目标歌曲不支持则自动降级；auto=按默认候选顺序（低码率OGG→128K→320K→M4A→试听）",
+                    component: "Select",
+                    componentProps: {
+                        options: QQ_MUSIC_QUALITY_LIST,
+                    }
                 },
 
                 // ==================== 小黑盒 ====================

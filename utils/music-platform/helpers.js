@@ -18,6 +18,10 @@ export function normalizePlatformAlias(platform = "") {
     if (["酷狗", "kg", "kugoumusic", "kugou"].includes(value)) {
         return "kugou";
     }
+    // value 已 toLowerCase，因此 "QQ音乐" 已变为 "qq音乐"
+    if (value === "qq" || value === "qq音乐" || value === "qqmusic" || value === "扣扣音乐") {
+        return "qq";
+    }
     return value;
 }
 

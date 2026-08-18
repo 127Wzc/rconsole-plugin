@@ -37,6 +37,7 @@
 
 import { createNeteasePlatform } from "./netease.js";
 import { createKugouPlatform } from "./kugou.js";
+import { createQqPlatform } from "./qq.js";
 import {
     createEmptyPlayResult,
     createSongItem,
@@ -116,3 +117,4 @@ export function listMusicPlatforms() {
 // 内置平台注册
 registerMusicPlatform("netease", createNeteasePlatform);
 registerMusicPlatform("kugou", createKugouPlatform);
+registerMusicPlatform("qq", createQqPlatform);

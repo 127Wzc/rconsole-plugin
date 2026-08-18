@@ -165,6 +165,7 @@ import { ytDlpGetDuration, ytDlpGetThumbnail, ytDlpGetThumbnailUrl, ytDlpGetTilt
 import { textArrayToMakeForward, downloadImagesAndMakeForward, cleanupTempFiles, sendImagesInBatches, sendCustomMusicCard } from "../utils/yunzai-util.js";
 import { getApiParams, optimizeImageUrl } from "../utils/xiaoheihe.js";
 import { extractInstagramUrl, fetchInstagramMedia, normalizeInstagramMedia } from "../utils/instagram.js";
+import { searchQqMusic, pickQqPlayUrl, resolveQqShareLink } from "../utils/qqmusic.js";
 
 /**
  * fetch重试函数
@@ -400,6 +401,10 @@ export class tools extends plugin {
         this.kugouApiServer = this.toolsConfig.kugouApiServer;
         this.kugouCookie = this.toolsConfig.kugouCookie;
         this.kugouAudioQuality = this.toolsConfig.kugouAudioQuality || 'viper_clear';
+        // QQ音乐Cookie
+        this.qqMusicCookie = this.toolsConfig.qqMusicCookie || "";
+        // QQ音乐解析音质
+        this.qqMusicAudioQuality = this.toolsConfig.qqMusicAudioQuality || "auto";
         // 加载是否自建服务器
         this.useLocalNeteaseAPI = this.toolsConfig.useLocalNeteaseAPI;
         // 加载自建服务器API
@@ -4612,53 +4617,156 @@ export class tools extends plugin {
             logger.info(`[R插件][全局解析控制] ${RESOLVE_CONTROLLER_NAME_ENUM.qqMusic} 已拦截`);
             return false;
         }
-        // case1:　Taylor Swift/Bleachers《Anti-Hero (Feat. Bleachers) (Explicit)》 https://c6.y.qq.com/base/fcgi-bin/u?__=lg19lFgQerbo @QQ音乐
-        /** case 2:
-         * {"app":"com.tencent.structmsg","config":{"ctime":1722497864,"forward":1,"token":"987908ab4a1c566d3645ef0ca52a162a","type":"normal"},"extra":{"app_type":1,"appid":100497308,"uin":542716863},"meta":{"news":{"action":"","android_pkg_name":"","app_type":1,"appid":100497308,"ctime":1722497864,"desc":"Taylor Swift/Bleachers","jumpUrl":"https://i.y.qq.com/v8/playsong.html?hosteuin=7KvA7i6sNeCi&sharefrom=gedan&from_id=1674373010&from_idtype=10014&from_name=(7rpl)&songid=382775503&songmid=&type=0&platform=1&appsongtype=1&_wv=1&source=qq&appshare=iphone&media_mid=000dKYJS3KCzpu&ADTAG=qfshare","preview":"https://pic.ugcimg.cn/1070bf5a6962b75263eee1404953c9b2/jpg1","source_icon":"https://p.qpic.cn/qqconnect/0/app_100497308_1626060999/100?max-age=2592000&t=0","source_url":"","tag":"QQ音乐","title":"Anti-Hero (Feat. Bleachers) (E…","uin":542716863}},"prompt":"[分享]Anti-Hero (Feat. Bleachers) (E…","ver":"0.0.0.1","view":"news"}
-         */
-        let musicInfo;
-        // applet判定
-        if (e.msg.includes(`"app":"com.tencent.music.lua"`) || e.msg.includes(`"app":"com.tencent.structmsg"`)) {
-            logger.info("[R插件][qqMusic] 识别为小程序分享");
-            const musicInfoJson = JSON.parse(e.msg);
-            // 歌手和歌名
-            const prompt = musicInfoJson.meta?.news?.title ?? musicInfoJson.meta?.music?.title;
-            const desc = musicInfoJson.meta?.news?.desc ?? musicInfoJson.meta?.music?.desc;
-            // 必要性拼接
-            musicInfo = prompt + "-" + desc;
-            // 空判定
-            if (musicInfo.trim() === "-" || prompt === undefined || desc === undefined) {
-                logger.info(`没有识别到QQ音乐小程序，帮助文档如下：${HELP_DOC}`);
+        // 统一提取原始数据（支持卡片消息与普通文本，参考 AGENTS.md「QQ 卡片消息处理经验」）
+        let rawText = e.msg === undefined ? e.message.shift().data.replaceAll("\\", "") : e.msg.trim().replaceAll("\\", "");
+        let url = rawText;
+        // 从卡片提取的标题/封面兜底信息
+        let cardTitle = "";
+        let cardDesc = "";
+        let cardCover = "";
+
+        // 如果是 JSON 卡片消息，尝试提取 jumpUrl 与标题
+        try {
+            if (url.startsWith("{") && url.includes('"app"')) {
+                const cardData = JSON.parse(url);
+                const news = cardData?.meta?.news;
+                const music = cardData?.meta?.music;
+                const jumpUrl = news?.jumpUrl ?? music?.jumpUrl;
+                if (jumpUrl) {
+                    url = jumpUrl;
+                    logger.info(`[R插件][qqMusic] 从卡片消息中提取到URL: ${url}`);
+                }
+                // 标题兜底：prompt + "-" + desc（参考原拼接逻辑）
+                cardTitle = news?.title ?? music?.title;
+                cardDesc = news?.desc ?? music?.desc;
+                cardCover = String(news?.preview ?? music?.preview ?? "").replace(/^http:\/\//i, "https://");
+            }
+        } catch (err) {
+            // 解析失败，保持原URL
+            logger.debug(`[R插件][qqMusic] URL解析跳过: ${err.message}`);
+        }
+
+        // 从混合文本中提取第一个 http(s) 链接（处理「标题 + 链接 + @平台」形态，如「LANY《up to me》https://... @QQ音乐」）
+        // 字符集排除中文标点/括号，避免把链接后的「，很好听」之类一并吞入
+        const linkMatch = url.match(/https?:\/\/[^\s，。；：！？、（）】》»"“”'`]+/);
+        if (linkMatch) {
+            url = linkMatch[0];
+        }
+        // 判断是否为 http(s) 链接
+        const isLink = /^https?:\/\//i.test(url);
+
+        // 标题兜底（卡片信息 → 链接前的标题 → 原始文本），去掉尾部 @平台 标签，并删除特殊字符
+        let musicInfo = cardTitle && cardDesc ? `${cardTitle}-${cardDesc}` : "";
+        if (!musicInfo) {
+            // 从原始文本切出链接前的标题（链接前可能是空格或全角书名号，不能要求前置空白）
+            const titleCandidate = isLink ? rawText.split(/https?:\/\//i)[0] : rawText;
+            musicInfo = String(titleCandidate).replace(/\s*@[^\s@]+$/i, "").trim();
+        }
+        musicInfo = cleanFilename(musicInfo || url);
+
+        try {
+            let r = null;
+            if (isLink) {
+                // 本地解析优先：分享链接直接取流
+                r = await resolveQqShareLink(url, { cookie: this.qqMusicCookie, quality: this.qqMusicAudioQuality });
+            } else {
+                // 非链接（纯标题文本）：搜索后取流；关键词用已清洗的 musicInfo
+                // （卡片无 jumpUrl 时 url 可能是整段 JSON，不能直接当关键词）
+                const searchKeyword = musicInfo || url;
+                const searchList = await searchQqMusic(searchKeyword, { cookie: this.qqMusicCookie, limit: 1 });
+                const first = searchList?.[0];
+                if (!first) {
+                    // 保留原「不支持链接」行为
+                    console.log('[R插件][qqMusic]: 暂不支持此类链接');
+                    return true;
+                }
+                r = await pickQqPlayUrl(first.mid, { mediaMid: first.mediaMid, cookie: this.qqMusicCookie, quality: this.qqMusicAudioQuality });
+                r.title = first.title;
+                r.singer = first.singer;
+                r.cover = first.cover;
+            }
+
+            logger.info(`[R插件][qqMusic] 识别音乐为：${musicInfo || r.title || r.mid || "未知歌曲"}`);
+
+            // 本地解析失败兜底：打印 warnings 后回退第三方临时接口
+            if (!r.url) {
+                for (const warning of r.warnings || []) {
+                    logger.warn(`[R插件][qqMusic] ${warning}`);
+                }
+                // 回退旧流程（第三方临时接口）；接口异常不抛出，转入可读提示
+                let tempUrl = "";
+                try {
+                    tempUrl = await this.musicTempApi(e, musicInfo, "QQ音乐");
+                } catch (err) {
+                    logger.error(`[R插件][qqMusic] 第三方临时接口失败: ${err.message}`);
+                }
+                if (!tempUrl) {
+                    // 兜底也没有音源，按原因给可读提示
+                    const warningText = (r.warnings || []).map(w => String(w)).join(" ");
+                    if (warningText.includes("104003")) {
+                        e.reply("QQ音乐无试听/下载权益（104003），可能需要 VIP 或存在版权限制，暂时无法解析该歌曲");
+                    } else if (/(业务码\s*1000|未登录)/.test(warningText) || warningText.includes("qqMusicCookie")) {
+                        e.reply("未配置 QQ 音乐 Cookie（tools.qqMusicCookie），本地取流不可用且临时接口无响应；浏览器登录 https://y.qq.com 复制 Cookie 后重试");
+                    } else {
+                        e.reply("QQ音乐解析失败（无可用音源），请检查 tools.qqMusicCookie 配置或稍后重试");
+                    }
+                    return true;
+                }
+                // 下载音乐
+                await downloadAudio(tempUrl, this.getCurDownloadPath(e), musicInfo, 'follow').then(async path => {
+                    // 发送语音
+                    if (this.isSendVocal) {
+                        await e.reply(segment.record(path));
+                    }
+                    // 判断是不是icqq
+                    await this.uploadGroupFile(e, path);
+                    await checkAndRemoveFile(path);
+                }).catch(err => {
+                    logger.error(`下载音乐失败，错误信息为: ${err.message}`);
+                });
                 return true;
             }
-        } else {
-            // 连接判定
-            const normalRegex = /^(.*?)\s*https?:\/\//;
-            musicInfo = normalRegex.exec(e.msg)?.[1].trim();
-        }
-        // 删除特殊字符
-        musicInfo = cleanFilename(musicInfo);
-        // 判断音乐信息是否存在
-        if (!musicInfo) {
-            console.log('[R插件][qqMusic]: 暂不支持此类链接');
+
+            // 本地解析成功：组装卡片信息并截图
+            const songName = r.title || cardTitle || "QQ音乐歌曲";
+            const singerName = r.singer || cardDesc || "";
+            const cover = (r.cover && r.cover !== "def") ? r.cover : (cardCover || r.cover || "def");
+            // 扩展名优先取 filename（如 O400xxxx.ogg），其次从 url 推导；非纯字母数字一律回落 m4a
+            let extName = (r.filename && r.filename.includes("."))
+                ? r.filename.split(".").pop()
+                : (String(r.url).split("?")[0].split(".").pop() || "m4a");
+            if (!/^[A-Za-z0-9]{1,8}$/.test(extName)) {
+                extName = "m4a";
+            }
+
+            const cardData = await new NeteaseMusicInfo(e).getData({
+                cover: cover,
+                songName: songName,
+                singerName: singerName,
+                size: "",
+                musicType: ["QQ音乐"]
+            });
+            const img = await puppeteer.screenshot("neteaseMusicInfo", cardData);
+            await e.reply(img);
+
+            // 下载音乐
+            await downloadAudio(r.url, this.getCurDownloadPath(e), musicInfo, 'follow', extName).then(async path => {
+                // 发送语音
+                if (this.isSendVocal) {
+                    await e.reply(segment.record(path));
+                }
+                // 判断是不是icqq
+                await this.uploadGroupFile(e, path);
+                await checkAndRemoveFile(path);
+            }).catch(err => {
+                logger.error(`下载音乐失败，错误信息为: ${err.message}`);
+            });
+            return true;
+        } catch (err) {
+            logger.error(`[R插件][qqMusic] 解析失败: ${err.message}`);
+            e.reply("QQ音乐解析失败，请稍后重试");
             return true;
         }
-        logger.info(`[R插件][qqMusic] 识别音乐为：${musicInfo}`);
-        // 使用临时接口下载
-        const url = await this.musicTempApi(e, musicInfo, "QQ音乐");
-        // 下载音乐
-        await downloadAudio(url, this.getCurDownloadPath(e), musicInfo, 'follow').then(async path => {
-            // 发送语音
-            if (this.isSendVocal) {
-                await e.reply(segment.record(path));
-            }
-            // 判断是不是icqq
-            await this.uploadGroupFile(e, path);
-            await checkAndRemoveFile(path);
-        }).catch(err => {
-            logger.error(`下载音乐失败，错误信息为: ${err.message}`);
-        });
-        return true;
     }
 
     // 酷狗音乐
