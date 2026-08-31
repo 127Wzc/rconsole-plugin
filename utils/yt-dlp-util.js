@@ -30,6 +30,79 @@ function constructEncodingParam(url) {
     return "--encoding UTF-8"; // 始终为标题获取使用 UTF-8 编码
 }
 
+const YTDLP_MAX_RETRIES = 4; // 首次执行失败后再重试4次，共最多5次
+const YTDLP_RETRY_MIN_DELAY = 300;
+const YTDLP_RETRY_MAX_DELAY = 2000;
+
+function waitForRetry(delay) {
+    return new Promise(resolve => setTimeout(resolve, delay));
+}
+
+function getRandomRetryDelay() {
+    return Math.floor(
+        Math.random() * (YTDLP_RETRY_MAX_DELAY - YTDLP_RETRY_MIN_DELAY + 1)
+    ) + YTDLP_RETRY_MIN_DELAY;
+}
+
+function isRetryableYtDlpError(error, stderr = "") {
+    const message = `${error?.message || ""}\n${stderr}`.toLowerCase();
+
+    // 这些错误属于参数或环境错误，重复执行不会改变结果。
+    return ![
+        "invalid url",
+        "unsupported url",
+        "command not found",
+        "no such file or directory",
+        "enoent"
+    ].some(keyword => message.includes(keyword));
+}
+
+function executeYtDlpCommand(command) {
+    return new Promise((resolve, reject) => {
+        exec(command, (error, stdout, stderr) => {
+            if (error) {
+                // 保留stderr，便于重试日志和最终失败日志定位实际原因。
+                error.stderr = stderr;
+                reject(error);
+            } else {
+                resolve(stdout);
+            }
+        });
+    });
+}
+
+async function executeYtDlpWithRetry(command, taskName) {
+    for (let retry = 0; retry <= YTDLP_MAX_RETRIES; retry++) {
+        try {
+            const stdout = await executeYtDlpCommand(command);
+
+            if (retry > 0) {
+                logger.info(`[R插件][yt-dlp审计] ${taskName}重试成功（第${retry + 1}次尝试）`);
+            }
+            return stdout;
+        } catch (error) {
+            const stderr = error.stderr || "";
+            const isFinalAttempt = retry >= YTDLP_MAX_RETRIES;
+
+            if (isFinalAttempt || !isRetryableYtDlpError(error, stderr)) {
+                logger.error(
+                    `[R插件][yt-dlp审计] ${taskName}失败: ${error}. Stderr: ${stderr}`
+                );
+                throw error;
+            }
+
+            const delay = getRandomRetryDelay();
+            logger.warn(
+                `[R插件][yt-dlp审计] ${taskName}失败，${delay}毫秒后重试 ` +
+                `(${retry + 1}/${YTDLP_MAX_RETRIES}): ${error.message}`
+            );
+
+            // 异步等待，不阻塞Node事件循环，其他指令仍可继续处理。
+            await waitForRetry(delay);
+        }
+    }
+}
+
 
 /**
  * 获取时长
@@ -61,24 +134,17 @@ export function ytDlpGetDuration(url, isOversea, proxy, cookiePath = "") {
  * @param isOversea
  * @param proxy
  * @param cookiePath
- * @returns string
+ * @returns {Promise<string>}
  */
-export function ytDlpGetTilt(url, isOversea, proxy, cookiePath = "") {
-    return new Promise((resolve, reject) => {
-        // 构造 cookie 参数
-        const cookieParam = constructCookiePath(url, cookiePath);
-        // 构造 编码 参数
-        const encodingParam = constructEncodingParam(url);
-        const command = `yt-dlp --get-title --skip-download ${cookieParam} ${constructProxyParam(isOversea, proxy)} "${url}" ${encodingParam}`;
-        exec(command, (error, stdout, stderr) => {
-            if (error) {
-                logger.error(`[R插件][yt-dlp审计] Error executing ytDlpGetTilt: ${error}. Stderr: ${stderr}`);
-                reject(error);
-            } else {
-                resolve(stdout.trim());
-            }
-        });
-    });
+export async function ytDlpGetTilt(url, isOversea, proxy, cookiePath = "") {
+    // 构造 cookie 参数
+    const cookieParam = constructCookiePath(url, cookiePath);
+    // 构造 编码 参数
+    const encodingParam = constructEncodingParam(url);
+    const command = `yt-dlp --get-title --skip-download ${cookieParam} ${constructProxyParam(isOversea, proxy)} "${url}" ${encodingParam}`;
+
+    const title = await executeYtDlpWithRetry(command, "获取标题");
+    return title.trim();
 }
 
 /**
@@ -145,58 +211,48 @@ export function ytDlpGetThumbnail(path, url, isOversea, proxy, cookiePath = "") 
  * @param preferredCodec 用户选择的编码：auto, av1, hevc, avc
  */
 export async function ytDlpHelper(path, url, isOversea, proxy, maxThreads, outputFilename, merge = false, graphics, timeRange, cookiePath = "", preferredCodec = "auto") {
-    return new Promise((resolve, reject) => {
-        let command = "";
-        // 构造 cookie 参数
-        const cookieParam = constructCookiePath(url, cookiePath);
-        // 确保 outputFilename 不为空，提供一个默认值以防万一
-        const finalOutputFilename = outputFilename || "temp_download";
+    let command = "";
+    // 构造 cookie 参数
+    const cookieParam = constructCookiePath(url, cookiePath);
+    // 确保 outputFilename 不为空，提供一个默认值以防万一
+    const finalOutputFilename = outputFilename || "temp_download";
 
-        if (url.includes("music")) {
-            // 这里是 YouTube Music的处理逻辑
-            // e.g yt-dlp -x --audio-format mp3 https://youtu.be/5wEtefq9VzM -o test.mp3
-            command = `yt-dlp -x --audio-format flac -f ba ${cookieParam} ${constructProxyParam(isOversea, proxy)} -P "${path}" -o "${finalOutputFilename}.flac" "${url}"`;
-        } else {
-            // YouTube视频下载逻辑
-            // 根据用户选择的编码设置 -S 参数
-            let codecSort;
-            switch (preferredCodec) {
-                case 'av1':
-                    codecSort = '-S "+codec:av01"';
-                    logger.info(`[R插件][yt-dlp] 用户指定编码: AV1`);
-                    break;
-                case 'hevc':
-                    codecSort = '-S "+codec:hev1"';
-                    logger.info(`[R插件][yt-dlp] 用户指定编码: HEVC`);
-                    break;
-                case 'avc':
-                    codecSort = '-S "+codec:avc1"';
-                    logger.info(`[R插件][yt-dlp] 用户指定编码: AVC`);
-                    break;
-                default:
-                    // auto: 使用 yt-dlp 默认的编码优先级（AV1 > VP9 > H.264）
-                    codecSort = '-S "codec"';
-                    break;
-            }
-
-            let formatSelector = "";
-            if (url.includes("youtu")) {
-                // graphics 包含画质限制如 [height<=720]
-                formatSelector = `--download-sections "*${timeRange}" -f "bv*${graphics}+ba/b${graphics}" ${codecSort} --merge-output-format mp4`;
-            }
-
-            command = `yt-dlp -N ${maxThreads} ${formatSelector} --concurrent-fragments ${maxThreads} ${cookieParam} ${constructProxyParam(isOversea, proxy)} -P "${path}" -o "${finalOutputFilename}.%(ext)s" "${url}"`;
+    if (url.includes("music")) {
+        // 这里是 YouTube Music的处理逻辑
+        // e.g yt-dlp -x --audio-format mp3 https://youtu.be/5wEtefq9VzM -o test.mp3
+        command = `yt-dlp -x --audio-format flac -f ba ${cookieParam} ${constructProxyParam(isOversea, proxy)} -P "${path}" -o "${finalOutputFilename}.flac" "${url}"`;
+    } else {
+        // YouTube视频下载逻辑
+        // 根据用户选择的编码设置 -S 参数
+        let codecSort;
+        switch (preferredCodec) {
+            case 'av1':
+                codecSort = '-S "+codec:av01"';
+                logger.info(`[R插件][yt-dlp] 用户指定编码: AV1`);
+                break;
+            case 'hevc':
+                codecSort = '-S "+codec:hev1"';
+                logger.info(`[R插件][yt-dlp] 用户指定编码: HEVC`);
+                break;
+            case 'avc':
+                codecSort = '-S "+codec:avc1"';
+                logger.info(`[R插件][yt-dlp] 用户指定编码: AVC`);
+                break;
+            default:
+                // auto: 使用 yt-dlp 默认的编码优先级（AV1 > VP9 > H.264）
+                codecSort = '-S "codec"';
+                break;
         }
 
-        logger.info(`[R插件][yt-dlp审计] ${command}`);
+        let formatSelector = "";
+        if (url.includes("youtu")) {
+            // graphics 包含画质限制如 [height<=720]
+            formatSelector = `--download-sections "*${timeRange}" -f "bv*${graphics}+ba/b${graphics}" ${codecSort} --merge-output-format mp4`;
+        }
 
-        exec(command, (error, stdout) => {
-            if (error) {
-                logger.error(`[R插件][yt-dlp审计] 执行命令时出错: ${error}`);
-                reject(error);
-            } else {
-                resolve(stdout);
-            }
-        });
-    });
+        command = `yt-dlp -N ${maxThreads} ${formatSelector} --concurrent-fragments ${maxThreads} ${cookieParam} ${constructProxyParam(isOversea, proxy)} -P "${path}" -o "${finalOutputFilename}.%(ext)s" "${url}"`;
+    }
+
+    logger.info(`[R插件][yt-dlp审计] ${command}`);
+    return executeYtDlpWithRetry(command, "视频下载");
 }
