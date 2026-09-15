@@ -559,7 +559,8 @@ export class tools extends plugin {
             const headers = {
                 "Accept-Language": "zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2",
                 "User-Agent": COMMON_USER_AGENT,
-                Referer: "https://www.douyin.com/",
+                "Origin": "https://open.douyin.com",
+                "Referer": "https://open.douyin.com/",
                 cookie: this.douyinCookie,
             };
 
@@ -633,7 +634,8 @@ export class tools extends plugin {
         const headers = {
             "Accept-Language": "zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2",
             "User-Agent": COMMON_USER_AGENT,
-            Referer: "https://www.douyin.com/",
+            "Origin": "https://open.douyin.com",
+            "Referer": "https://open.douyin.com/",
             cookie: this.douyinCookie,
         };
         let dyApi;
