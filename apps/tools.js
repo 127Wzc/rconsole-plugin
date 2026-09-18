@@ -2866,6 +2866,8 @@ export class tools extends plugin {
      * 直接 JSON.parse 会撞上 new Map( 抛 Unexpected token。
      * 策略：先直解，成功就返回（避免误伤字符串里的 undefined 字样）；
      * 失败才归一化 undefined→null、new Map/Set([...])→{} 后再解一次。
+     * 归一化只作用于「字符串字面量之外」的 token，字符串值原样保留，
+     * 避免 title / desc 里正常出现的 undefined、new Map( 字样被污染。
      * @param {string} raw __INITIAL_STATE__ 后面的原始字符串
      * @returns {object}
      */
@@ -2873,11 +2875,60 @@ export class tools extends plugin {
         try {
             return JSON.parse(raw);
         } catch (_e) {
-            const normalized = raw
-                .replace(/\bundefined\b/g, "null")
-                .replace(/\bnew\s+(?:Map|Set)\s*\([^)]*\)/g, "{}");
-            return JSON.parse(normalized);
+            return JSON.parse(this.normalizeXhsJsLiteral(raw));
         }
+    }
+
+    /**
+     * 把 __INITIAL_STATE__ 里的 JS 字面量归一化成合法 JSON：
+     * undefined→null、new Map/Set([...])→{}。只处理字符串之外的内容，
+     * 逐字符扫描，遇到双引号字符串就整段原样拷贝（含 \" 转义），字符串里的一切都不动。
+     * @param {string} raw
+     * @returns {string}
+     */
+    normalizeXhsJsLiteral(raw) {
+        let out = "";
+        let i = 0;
+        const n = raw.length;
+        while (i < n) {
+            const ch = raw[i];
+            // 进入字符串：原样拷贝到闭合引号，跳过转义字符
+            if (ch === '"') {
+                out += ch;
+                i++;
+                while (i < n) {
+                    const c = raw[i];
+                    out += c;
+                    i++;
+                    if (c === "\\") {
+                        // 转义序列，下一个字符原样带上
+                        if (i < n) {
+                            out += raw[i];
+                            i++;
+                        }
+                    } else if (c === '"') {
+                        break;
+                    }
+                }
+                continue;
+            }
+            // 字符串之外：new Map/Set([...]) → {}
+            const literal = /^new\s+(?:Map|Set)\s*\([^)]*\)/.exec(raw.slice(i));
+            if (literal) {
+                out += "{}";
+                i += literal[0].length;
+                continue;
+            }
+            // 字符串之外：独立的 undefined token → null
+            if (raw.startsWith("undefined", i) && !/\w/.test(raw[i - 1] || "") && !/\w/.test(raw[i + 9] || "")) {
+                out += "null";
+                i += 9;
+                continue;
+            }
+            out += ch;
+            i++;
+        }
+        return out;
     }
 
     // 波点音乐解析
